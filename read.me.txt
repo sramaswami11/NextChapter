@@ -1,0 +1,8 @@
+//read.me
+//to run with ollama
+
+!  ollama pull qwen3:8b
+! export OLLAMA_MODEL="qwen3:8b"
+Then start the server:
+
+! cd /c/Siva/Projects/Python/NextChapter && .venv/Scripts/uvicorn api.app:app --reload --port 8000

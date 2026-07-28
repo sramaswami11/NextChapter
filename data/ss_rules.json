@@ -1,0 +1,16 @@
+{
+  "fra_table": [
+    {"birth_year_max": 1954, "fra": 66.0},
+    {"birth_year_max": 1955, "fra": 66.1667},
+    {"birth_year_max": 1956, "fra": 66.3333},
+    {"birth_year_max": 1957, "fra": 66.5},
+    {"birth_year_max": 1958, "fra": 66.6667},
+    {"birth_year_max": 1959, "fra": 66.8333},
+    {"birth_year_max": 9999, "fra": 67.0}
+  ],
+  "early_reduction_first_36_monthly": 0.005556,
+  "early_reduction_after_36_monthly": 0.004167,
+  "delayed_credit_monthly": 0.006667,
+  "earliest_claiming_age": 62,
+  "max_credit_age": 70
+}

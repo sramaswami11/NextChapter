@@ -1,0 +1,7 @@
+fastapi>=0.111
+uvicorn[standard]>=0.30
+jinja2>=3.1
+python-multipart>=0.0.9
+numpy>=1.26
+anthropic>=0.28
+pdfplumber>=0.11

@@ -1,0 +1,18 @@
+# Virtual environment
+.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment variables
+.env
+
+# Internal planning notes
+claude_notes.md
+NextChapter.md
+
+# OS
+.DS_Store
+Thumbs.db
