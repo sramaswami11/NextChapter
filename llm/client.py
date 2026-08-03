@@ -14,6 +14,12 @@ def explain(system: str, user: str) -> str:
     if result:
         return result
 
+    groq_key = os.environ.get("GROQ_API_KEY")
+    if groq_key:
+        result = _groq(system, user, groq_key)
+        if result:
+            return result
+
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if api_key:
         result = _anthropic(system, user, api_key)
@@ -21,6 +27,29 @@ def explain(system: str, user: str) -> str:
             return result
 
     return _FALLBACK
+
+
+def _groq(system: str, user: str, api_key: str) -> str | None:
+    try:
+        import groq
+        model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+        client = groq.Groq(api_key=api_key)
+        resp = client.chat.completions.create(
+            model=model,
+            max_tokens=400,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user",   "content": user},
+            ],
+        )
+        content = resp.choices[0].message.content.strip()
+        if not content:
+            logger.warning("Groq returned empty content for model %s", model)
+            return None
+        return content
+    except Exception as e:
+        logger.error("Groq call failed: %s", e)
+        return None
 
 
 def _anthropic(system: str, user: str, api_key: str) -> str | None:
