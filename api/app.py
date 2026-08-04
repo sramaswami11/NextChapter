@@ -12,7 +12,7 @@ from core.digital_twin import (
 )
 from engines.monte_carlo import run_monte_carlo
 from engines.tax_engine import optimize_roth_conversion, current_year_roth_advisor
-from engines.ss_engine import analyze_claiming_scenarios, benefit_at_age
+from engines.ss_engine import analyze_claiming_scenarios, benefit_at_age, recommended_strategy
 from llm.client import explain
 
 app = FastAPI()
@@ -182,13 +182,23 @@ async def chat(request: Request, message: str = Form(...)):
             tax_context = "No Roth conversion gap window (retiring at or after RMD age 73, or all savings in Roth)."
 
         if pia_monthly > 0 and ss_data:
+            le = state.life_expectancy or 84
+            ss_rec = recommended_strategy(ss_data, le)
+            rec_labels = {
+                "claim_62": "claim at 62",
+                "claim_fra": f"claim at FRA ({ss_data['fra_label']})",
+                "claim_70": "delay to 70",
+            }
             ss_context = (
                 f"Social Security: PIA ${pia_monthly:,.0f}/mo at FRA {ss_data['fra_label']}. "
                 f"Claiming at 62: ${ss_data['claim_62']['monthly']:,}/mo "
                 f"({ss_data['claim_62']['pct_vs_fra']}% vs FRA). "
                 f"Claiming at 70: ${ss_data['claim_70']['monthly']:,}/mo "
                 f"(+{ss_data['claim_70']['pct_vs_fra']}% vs FRA). "
-                f"Success rate with SS: claim 62={mc_62['success_rate']}%, "
+                f"Breakeven FRA vs 70: age {ss_data['breakeven_fra_vs_70']}. "
+                f"Client's estimated life expectancy: {le}. "
+                f"RECOMMENDED strategy based on longevity: {rec_labels[ss_rec]}. "
+                f"Success rates: claim 62={mc_62['success_rate']}%, "
                 f"FRA={mc_fra['success_rate']}%, age 70={mc_70['success_rate']}%."
             )
         else:
@@ -226,7 +236,7 @@ async def chat(request: Request, message: str = Form(...)):
         state.last_cy_roth_results = cy_roth
 
         yield _sse("chat", summary)
-        yield _sse("dashboard", _build_dashboard(results, twin, tax, ss_data, mc_62, mc_fra, mc_70, cy_roth))
+        yield _sse("dashboard", _build_dashboard(results, twin, tax, ss_data, mc_62, mc_fra, mc_70, cy_roth, state.life_expectancy))
 
     response = StreamingResponse(generate(), media_type="text/event-stream")
     response.headers["Cache-Control"] = "no-cache"
@@ -251,6 +261,7 @@ def _build_dashboard(
     mc_fra: dict,
     mc_70: dict,
     cy_roth: dict | None = None,
+    life_expectancy: int | None = None,
 ) -> str:
     rate = results["success_rate"]
     bar = int(rate)
@@ -390,27 +401,32 @@ def _build_dashboard(
         be_62_fra  = ss_data["breakeven_62_vs_fra"]
         be_fra_70  = ss_data["breakeven_fra_vs_70"]
         be_62_70   = ss_data["breakeven_62_vs_70"]
+        le = life_expectancy or 84
+        ss_rec = recommended_strategy(ss_data, le)
 
         def _sr_color(r):
             return "#22c55e" if r >= 85 else "#f59e0b" if r >= 70 else "#ef4444"
 
+        def _rec_badge(key):
+            return ' &nbsp;<span style="font-size:11px;background:#22c55e;color:#fff;padding:2px 6px;border-radius:4px">&#9733; Recommended</span>' if ss_rec == key else ""
+
         ss_section = f"""
 <div class="section-header">Social Security Claiming Strategy</div>
 <div class="kpi-grid-3">
-  <div class="kpi ss-early">
-    <div class="kpi-label">Claim at 62 (Early)</div>
+  <div class="kpi ss-early{"  kpi-primary" if ss_rec == "claim_62" else ""}">
+    <div class="kpi-label">Claim at 62 (Early){_rec_badge("claim_62")}</div>
     <div class="kpi-value">${c62['monthly']:,}<span style="font-size:14px;font-weight:400">/mo</span></div>
     <div class="kpi-sub">${c62['annual']:,}/yr &nbsp;&bull;&nbsp; {c62['pct_vs_fra']}% vs FRA</div>
     <div class="kpi-sub" style="margin-top:8px">Success rate: <strong style="color:{_sr_color(mc_62['success_rate'])}">{mc_62['success_rate']}%</strong></div>
   </div>
-  <div class="kpi ss-fra kpi-primary">
-    <div class="kpi-label">Claim at FRA ({fra_label})</div>
+  <div class="kpi ss-fra{"  kpi-primary" if ss_rec == "claim_fra" else ""}">
+    <div class="kpi-label">Claim at FRA ({fra_label}){_rec_badge("claim_fra")}</div>
     <div class="kpi-value">${cfra['monthly']:,}<span style="font-size:14px;font-weight:400">/mo</span></div>
     <div class="kpi-sub">${cfra['annual']:,}/yr &nbsp;&bull;&nbsp; your PIA</div>
     <div class="kpi-sub" style="margin-top:8px">Success rate: <strong style="color:{_sr_color(mc_fra['success_rate'])}">{mc_fra['success_rate']}%</strong></div>
   </div>
-  <div class="kpi ss-late">
-    <div class="kpi-label">Claim at 70 (Maximum)</div>
+  <div class="kpi ss-late{"  kpi-primary" if ss_rec == "claim_70" else ""}">
+    <div class="kpi-label">Claim at 70 (Maximum){_rec_badge("claim_70")}</div>
     <div class="kpi-value">${c70['monthly']:,}<span style="font-size:14px;font-weight:400">/mo</span></div>
     <div class="kpi-sub">${c70['annual']:,}/yr &nbsp;&bull;&nbsp; +{c70['pct_vs_fra']}% vs FRA</div>
     <div class="kpi-sub" style="margin-top:8px">Success rate: <strong style="color:{_sr_color(mc_70['success_rate'])}">{mc_70['success_rate']}%</strong></div>
@@ -421,6 +437,7 @@ def _build_dashboard(
   <div class="assumptions-row"><span>Claim 62 vs FRA &mdash; break even at age</span><span>{be_62_fra}</span></div>
   <div class="assumptions-row"><span>Claim FRA vs 70 &mdash; break even at age</span><span>{be_fra_70}</span></div>
   <div class="assumptions-row"><span>Claim 62 vs 70 &mdash; break even at age</span><span>{be_62_70}</span></div>
+  <div class="assumptions-row"><span>Your estimated life expectancy</span><span>age {le}</span></div>
 </div>"""
     else:
         ss_section = '<div class="roth-note">Social Security: not included in this analysis.</div>'

@@ -101,6 +101,15 @@ def analyze_claiming_scenarios(pia_monthly: float, birth_year: int) -> dict:
     }
 
 
+def recommended_strategy(ss: dict, life_expectancy: int) -> str:
+    """Return 'claim_62', 'claim_fra', or 'claim_70' based on life expectancy vs breakeven ages."""
+    if life_expectancy <= ss["breakeven_62_vs_fra"]:
+        return "claim_62"
+    if life_expectancy <= ss["breakeven_fra_vs_70"]:
+        return "claim_fra"
+    return "claim_70"
+
+
 def _fra_label(fra: float) -> str:
     """Human-readable FRA like '67' or '66 and 6 months'."""
     years = int(fra)

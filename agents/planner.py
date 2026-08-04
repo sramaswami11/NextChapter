@@ -14,6 +14,8 @@ class ConversationState:
     ss_monthly_benefit: Optional[float] = None  # monthly PIA at FRA; 0 = no SS
     current_taxable_income: Optional[float] = None  # gross income this year; None = skipped
     current_income_answered: bool = False
+    life_expectancy: Optional[int] = None
+    life_expectancy_answered: bool = False
     analysis_complete: bool = False
     last_mc_results: Optional[dict] = None
     last_tax_results: Optional[dict] = None
@@ -30,6 +32,7 @@ class ConversationState:
             and self.filing_status is not None
             and self.ss_monthly_benefit is not None
             and self.current_income_answered
+            and self.life_expectancy_answered
         )
 
     def next_question(self) -> str:
@@ -59,6 +62,11 @@ class ConversationState:
                 "What is your expected total taxable income this year from all sources — "
                 "wages, interest, dividends, and any other income? "
                 "(e.g. '$95k', '$200k') Type 'skip' if you'd prefer to skip this."
+            )
+        if not self.life_expectancy_answered:
+            return (
+                "What age do you expect to live to? This helps us recommend the right "
+                "Social Security claiming age. (e.g. 85, 90 — or type 'average' for 84)"
             )
         return ""
 
@@ -102,11 +110,20 @@ class ConversationState:
             tax_part = "Roth conversion: no gap window (retiring at or after RMD age 73)."
 
         if ss and ss.get("pia_monthly", 0) > 0:
+            le = self.life_expectancy or 84
+            be_fra_70 = ss["breakeven_fra_vs_70"]
+            be_62_fra = ss["breakeven_62_vs_fra"]
+            if le <= be_62_fra:
+                rec = f"Recommended: claim at 62 (life expectancy {le} is before breakeven at {be_62_fra})."
+            elif le <= be_fra_70:
+                rec = f"Recommended: claim at FRA (life expectancy {le} is before FRA-vs-70 breakeven at {be_fra_70})."
+            else:
+                rec = f"Recommended: delay to 70 (life expectancy {le} exceeds breakeven at {be_fra_70})."
             ss_part = (
                 f"Social Security: PIA ${ss['pia_monthly']:,}/mo at FRA {ss['fra_label']}. "
                 f"Claiming at 62: ${ss['claim_62']['monthly']:,}/mo ({ss['claim_62']['pct_vs_fra']}% vs FRA). "
                 f"Claiming at 70: ${ss['claim_70']['monthly']:,}/mo (+{ss['claim_70']['pct_vs_fra']}% vs FRA). "
-                f"Breakeven claiming at 70 vs FRA: age {ss['breakeven_fra_vs_70']}."
+                f"Breakeven FRA vs 70: age {be_fra_70}. {rec}"
             )
         elif ss:
             ss_part = "Social Security: client has no SS benefits."
@@ -253,4 +270,16 @@ def process_message(state: ConversationState, text: str) -> None:
             if num is not None and num >= 0:
                 state.current_taxable_income = num
                 state.current_income_answered = True
+        return
+
+    if not state.life_expectancy_answered:
+        t = text.lower().strip()
+        if any(w in t for w in ("average", "don't know", "not sure", "typical", "normal")):
+            state.life_expectancy = 84
+            state.life_expectancy_answered = True
+        else:
+            num = _parse_number(text)
+            if num is not None and 65 <= num <= 110:
+                state.life_expectancy = int(num)
+                state.life_expectancy_answered = True
         return
