@@ -21,6 +21,7 @@ class ConversationState:
     last_tax_results: Optional[dict] = None
     last_ss_results: Optional[dict] = None
     last_cy_roth_results: Optional[dict] = None
+    last_elim_results: Optional[dict] = None
 
     def is_ready(self) -> bool:
         return (
@@ -142,7 +143,18 @@ class ConversationState:
         else:
             cy_part = ""
 
-        return "  ".join(filter(None, [profile, mc_part, tax_part, ss_part, cy_part]))
+        elim = self.last_elim_results or {}
+        if elim and elim.get("possible") and elim.get("annual_conversion", 0) > 0:
+            elim_part = (
+                f"Full RMD elimination option: convert ${elim['annual_conversion']:,.0f}/yr "
+                f"at {int(elim['conversion_tax_rate'] * 100)}% marginal rate "
+                f"to drain traditional IRA to $0 by age 73. "
+                f"Lifetime net savings vs no conversion: ${elim['lifetime_net_savings']:,.0f}."
+            )
+        else:
+            elim_part = ""
+
+        return "  ".join(filter(None, [profile, mc_part, tax_part, elim_part, ss_part, cy_part]))
 
 
 def _parse_percentage(text: str) -> Optional[float]:

@@ -199,6 +199,90 @@ def optimize_roth_conversion(twin: HouseholdTwin) -> dict:
     }
 
 
+def rmd_elimination_calculator(twin: HouseholdTwin) -> dict:
+    """
+    Compute the annual Roth conversion needed to fully drain the traditional IRA
+    to $0 by age 73, eliminating all forced RMDs. Uses an annuity-drain formula.
+    """
+    fs = twin.tax_profile.filing_status
+    a = twin.assumptions
+    mu = a.stock_pct * a.stock_return + (1 - a.stock_pct) * a.bond_return
+
+    retirement_age = twin.person.retirement_age
+    current_age = twin.person.age
+    gap_years = max(0, _RMD_START - retirement_age)
+    years_to_retirement = max(0, retirement_age - current_age)
+    annual_spending = twin.spending.annual
+    traditional_now = twin.accounts.traditional_balance
+
+    if gap_years == 0 or traditional_now == 0:
+        return {
+            "possible": False,
+            "annual_conversion": 0,
+            "conversion_tax_rate": 0.0,
+            "annual_tax_cost": 0,
+            "gap_years": gap_years,
+            "lifetime_rmd_taxes_saved": 0,
+            "lifetime_conversion_tax_cost": 0,
+            "lifetime_net_savings": 0,
+            "rmd_no_conversion": 0,
+            "reason": "no_gap" if gap_years == 0 else "all_roth",
+        }
+
+    trad_at_ret = traditional_now * (1 + mu) ** years_to_retirement
+
+    # First RMD at 73 without any conversion (for context and lifetime savings calc)
+    trad_no_conv = trad_at_ret
+    for _ in range(gap_years):
+        trad_no_conv = max(0.0, trad_no_conv * (1 + mu) - annual_spending)
+    divisor_73 = _RMD_DIVISORS.get(73, 26.5)
+    rmd_no_conv = trad_no_conv / divisor_73
+
+    # Annuity drain: find total annual withdrawal W such that B_n = 0
+    # B_n = B_0 * g^n - W * (g^n - 1)/(g - 1) = 0  =>  W = B_0 * g^n * (g-1) / (g^n - 1)
+    g = 1 + mu
+    gn = g ** gap_years
+    total_withdrawal = trad_at_ret * gn * (g - 1) / (gn - 1)
+    annual_conversion_elim = total_withdrawal - annual_spending
+
+    years_of_rmds = max(90 - _RMD_START, 0)
+    lifetime_rmd_taxes_saved = tax_owed(rmd_no_conv, fs) * years_of_rmds
+
+    if annual_conversion_elim <= 0:
+        return {
+            "possible": True,
+            "annual_conversion": 0,
+            "conversion_tax_rate": marginal_rate(annual_spending, fs),
+            "annual_tax_cost": 0,
+            "gap_years": gap_years,
+            "lifetime_rmd_taxes_saved": round(lifetime_rmd_taxes_saved),
+            "lifetime_conversion_tax_cost": 0,
+            "lifetime_net_savings": round(lifetime_rmd_taxes_saved),
+            "rmd_no_conversion": round(rmd_no_conv),
+            "reason": "spending_sufficient",
+        }
+
+    annual_tax_cost = (
+        tax_owed(annual_spending + annual_conversion_elim, fs)
+        - tax_owed(annual_spending, fs)
+    )
+    lifetime_conversion_tax_cost = annual_tax_cost * gap_years
+    lifetime_net_savings = lifetime_rmd_taxes_saved - lifetime_conversion_tax_cost
+
+    return {
+        "possible": True,
+        "annual_conversion": round(annual_conversion_elim),
+        "conversion_tax_rate": marginal_rate(annual_spending + annual_conversion_elim, fs),
+        "annual_tax_cost": round(annual_tax_cost),
+        "gap_years": gap_years,
+        "lifetime_rmd_taxes_saved": round(lifetime_rmd_taxes_saved),
+        "lifetime_conversion_tax_cost": round(lifetime_conversion_tax_cost),
+        "lifetime_net_savings": round(lifetime_net_savings),
+        "rmd_no_conversion": round(rmd_no_conv),
+        "reason": None,
+    }
+
+
 def current_year_roth_advisor(current_income: float, filing_status: str) -> dict:
     """
     Given the user's current-year gross income, compute Roth conversion

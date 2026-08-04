@@ -11,7 +11,7 @@ from core.digital_twin import (
     Accounts, Assumptions, HouseholdTwin, Person, Spending, TaxProfile, SocialSecurity
 )
 from engines.monte_carlo import run_monte_carlo
-from engines.tax_engine import optimize_roth_conversion, current_year_roth_advisor
+from engines.tax_engine import optimize_roth_conversion, current_year_roth_advisor, rmd_elimination_calculator
 from engines.ss_engine import analyze_claiming_scenarios, benefit_at_age, recommended_strategy
 from llm.client import explain
 
@@ -146,6 +146,10 @@ async def chat(request: Request, message: str = Form(...)):
         yield _sse("chat", "✓ Roth conversion optimizer")
         await asyncio.sleep(0.2)
 
+        elim = rmd_elimination_calculator(twin)
+        yield _sse("chat", "✓ RMD elimination analysis")
+        await asyncio.sleep(0.2)
+
         cy_roth = None
         if state.current_taxable_income is not None:
             cy_roth = current_year_roth_advisor(state.current_taxable_income, state.filing_status)
@@ -154,6 +158,13 @@ async def chat(request: Request, message: str = Form(...)):
 
         # ── Build LLM context ──────────────────────────────────────────────────
         if not tax.get("no_opportunity") and tax["annual_conversion"] > 0:
+            elim_note = ""
+            if elim.get("possible") and elim.get("annual_conversion", 0) > 0:
+                elim_note = (
+                    f" Full RMD elimination alternative: convert ${elim['annual_conversion']:,.0f}/yr "
+                    f"to drain traditional IRA to $0 by 73 "
+                    f"(net lifetime savings ${elim['lifetime_net_savings']:,.0f})."
+                )
             tax_context = (
                 f"Tax analysis: {tax['gap_years']}-year Roth conversion window "
                 f"(ages {state.retirement_age} to 73). "
@@ -161,7 +172,7 @@ async def chat(request: Request, message: str = Form(...)):
                 f"(marginal rate {tax['conversion_tax_rate']:.0%}). "
                 f"First RMD at 73 drops from ${tax['rmd_no_conversion']:,.0f} to "
                 f"${tax['rmd_with_conversion']:,.0f}/yr. "
-                f"Estimated lifetime tax savings: ${tax['lifetime_tax_savings']:,.0f}."
+                f"Estimated lifetime tax savings: ${tax['lifetime_tax_savings']:,.0f}.{elim_note}"
             )
         elif tax.get("no_opportunity_reason") == "low_rmd":
             tax_context = (
@@ -234,9 +245,10 @@ async def chat(request: Request, message: str = Form(...)):
         state.last_tax_results = tax
         state.last_ss_results = ss_data
         state.last_cy_roth_results = cy_roth
+        state.last_elim_results = elim
 
         yield _sse("chat", summary)
-        yield _sse("dashboard", _build_dashboard(results, twin, tax, ss_data, mc_62, mc_fra, mc_70, cy_roth, state.life_expectancy))
+        yield _sse("dashboard", _build_dashboard(results, twin, tax, ss_data, mc_62, mc_fra, mc_70, cy_roth, state.life_expectancy, elim))
 
     response = StreamingResponse(generate(), media_type="text/event-stream")
     response.headers["Cache-Control"] = "no-cache"
@@ -262,6 +274,7 @@ def _build_dashboard(
     mc_70: dict,
     cy_roth: dict | None = None,
     life_expectancy: int | None = None,
+    elim: dict | None = None,
 ) -> str:
     rate = results["success_rate"]
     bar = int(rate)
@@ -390,6 +403,21 @@ def _build_dashboard(
     <div class="kpi-value" style="color:{savings_color}">${savings:,.0f}</div>
     <div class="kpi-sub">RMD tax reduction &minus; conversion tax cost (ages 73&ndash;90)</div>
   </div>
+</div>"""
+
+        if elim and elim.get("possible") and elim.get("annual_conversion", 0) > 0:
+            elim_conv = elim["annual_conversion"]
+            elim_rate_pct = int(elim["conversion_tax_rate"] * 100)
+            elim_tax = elim["annual_tax_cost"]
+            elim_net = elim["lifetime_net_savings"]
+            roth_section += f"""
+<div class="assumptions-box">
+  <div class="assumptions-title">Strategy Comparison: Partial vs. Full RMD Elimination</div>
+  <div class="assumptions-row"><span></span><span>Partial (recommended)</span><span>Full Elimination</span></div>
+  <div class="assumptions-row"><span>Convert per year</span><span>${conv:,.0f}</span><span>${elim_conv:,.0f}</span></div>
+  <div class="assumptions-row"><span>Marginal rate</span><span>{rate_pct}%</span><span>{elim_rate_pct}%</span></div>
+  <div class="assumptions-row"><span>Annual tax cost</span><span>${tax['annual_tax_cost']:,.0f}</span><span>${elim_tax:,.0f}</span></div>
+  <div class="assumptions-row"><span>Est. lifetime savings</span><span>${savings:,.0f}</span><span>${elim_net:,.0f}</span></div>
 </div>"""
 
     # --- Social Security section ---
