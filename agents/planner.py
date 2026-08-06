@@ -181,10 +181,11 @@ def _parse_percentage(text: str) -> Optional[float]:
 
 def _parse_filing_status(text: str) -> Optional[str]:
     t = text.lower()
+    # Check negations before "married" so "not married" / "unmarried" don't match the married branch
+    if "not married" in t or "unmarried" in t or "single" in t:
+        return "single"
     if "married" in t or "joint" in t or "mfj" in t or "spouse" in t:
         return "married"
-    if "single" in t or "not married" in t or "unmarried" in t:
-        return "single"
     return None
 
 

@@ -1,8 +1,8 @@
 # NextChapter — Architecture & Design Document
 
-**Version:** Step 3 Complete  
-**Last updated:** 2026-07-26  
-**Status:** Monte Carlo + Roth Conversion Optimizer + Social Security Agent + Follow-up Conversation live
+**Version:** Enhancement A Complete  
+**Last updated:** 2026-08-06  
+**Status:** Monte Carlo + Tax Agent + SS Agent + Groq fallback + Longevity SS Rec + Enhancement B (Current Year Roth) + Enhancement A (RMD Elimination) live. Deployed on Render.
 
 ---
 
@@ -64,13 +64,14 @@ Browser (dark-theme two-pane UI)
            │  results dict                         │  tax dict
            └───────────────────┬───────────────────┘
                                ▼
-                 ┌─────────────────────────────────────┐
-                 │  LLM Client  (llm/client.py)        │
-                 │  Priority chain:                    │
-                 │    1. Ollama (local — qwen3:8b)     │
-                 │    2. Anthropic API (cloud fallback)│
-                 │    3. Static string (always works)  │
-                 └─────────────────────────────────────┘
+                 ┌──────────────────────────────────────────────────────┐
+                 │  LLM Client  (llm/client.py)                         │
+                 │  Priority chain:                                      │
+                 │    1. Ollama (local — qwen3:8b)  $0, needs local svc │
+                 │    2. Groq API (GROQ_API_KEY)    fast, free tier      │
+                 │    3. Anthropic API (ANTHROPIC_API_KEY)  cloud        │
+                 │    4. Static string              always works          │
+                 └──────────────────────────────────────────────────────┘
 ```
 
 The browser never talks directly to Ollama or to any calculation engine. Everything is mediated by FastAPI.
@@ -162,6 +163,8 @@ Married Filing Jointly brackets are the same rates at approximately double the t
 | `marginal_rate(gross_income, filing_status)` | Rate on the last dollar of income |
 | `bracket_headroom(gross_income, filing_status, target_rate)` | Additional income that fits before exceeding `target_rate` bracket |
 | `optimize_roth_conversion(twin)` | Full Roth conversion analysis — see algorithm below |
+| `rmd_elimination_calculator(twin)` | Computes annual Roth conversion to drain traditional IRA to $0 by age 73, eliminating all forced RMDs (Enhancement A) |
+| `current_year_roth_advisor(current_income, filing_status)` | One-time analysis: current bracket, room to fill before next bracket, stretch option (Enhancement B) |
 
 **`optimize_roth_conversion()` algorithm:**
 
@@ -228,11 +231,12 @@ claiming_ages       62–70
 
 | Function | Purpose |
 |---|---|
-| `get_fra(birth_year)` | Returns `(years, months)` FRA tuple for a given birth year |
+| `get_fra(birth_year)` | Returns FRA as float (years) for a given birth year |
 | `benefit_at_age(pia, birth_year, claim_age)` | Monthly benefit after early/delayed adjustment |
 | `breakeven_age(pia, birth_year, age_a, age_b)` | Age at which later-claiming strategy overtakes earlier one in cumulative lifetime benefits |
 | `analyze_claiming_scenarios(pia, birth_year)` | Returns dict with claim-at-62, claim-at-FRA, claim-at-70 scenarios |
-| `_fra_label(birth_year)` | Human-readable FRA string e.g. `"67"` |
+| `recommended_strategy(ss, life_expectancy)` | Returns `"62"`, `"fra"`, or `"70"` by comparing life expectancy to the two breakeven ages |
+| `_fra_label(fra)` | Human-readable FRA string e.g. `"67"` |
 
 **`benefit_at_age()` algorithm:**
 
@@ -299,28 +303,40 @@ If delta > 0 (delayed):
 
 **Purpose:** Manages the conversation — tracks what we know, asks for what we don't, parses natural language, and provides context for follow-up questions.
 
-**`ConversationState`** has seven data-collection fields plus three state-tracking fields:
+**`ConversationState`** has nine data-collection fields plus five state-tracking fields:
 
 ```
 Data fields (collected via Q&A):
-  retirement_age → age → savings → annual_spending → traditional_pct → filing_status → ss_monthly_benefit
+  retirement_age → age → savings → annual_spending → traditional_pct
+  → filing_status → ss_monthly_benefit → current_taxable_income (Q8)
+  → life_expectancy (Q9)
+
+Sentinel booleans (skippable fields):
+  current_income_answered: bool   — True once Q8 answered or skipped
+  life_expectancy_answered: bool  — True once Q9 answered
 
 State fields:
-  analysis_complete: bool        — True after first full analysis run
-  last_mc_results:  dict | None  — stored Monte Carlo output
-  last_tax_results: dict | None  — stored Roth optimizer output
+  analysis_complete: bool          — True after first full analysis run
+  last_mc_results:  dict | None    — stored Monte Carlo output
+  last_tax_results: dict | None    — stored Roth optimizer output
+  last_ss_results:  dict | None    — stored SS scenario output
+  last_cy_roth_results: dict|None  — stored current-year Roth advisor output
+  last_elim_results: dict | None   — stored RMD elimination calculator output
 ```
 
-**`is_ready()`** checks all seven data fields are non-None. Note: `ss_monthly_benefit` can be `0.0` (no SS), so uses `is not None` rather than bare truthiness. Note: `traditional_pct` can be `0.0` (all Roth), so uses `is not None` rather than bare truthiness.
+**`is_ready()`** checks all seven data fields are non-None AND both sentinel booleans are True. Note: `ss_monthly_benefit` can be `0.0` (no SS) and `traditional_pct` can be `0.0` (all Roth) — both use `is not None` not bare truthiness.
 
 **`next_question()`** implements strict priority order. The sequence is deliberate:
 - Retirement age first — it's the intent the user already stated
 - Current age second — needed to compute years to retirement
 - Savings and spending — simulation inputs
 - Traditional % — needed for tax analysis only, asked after core Monte Carlo inputs
-- Filing status — final tax input
+- Filing status — tax analysis input
+- SS benefit — SS agent input
+- Q8: current taxable income — for Enhancement B current-year Roth advisor (skippable)
+- Q9: life expectancy — for longevity-aware SS recommendation (accepts "average" → 84)
 
-**`results_context()`** builds a structured text summary of the completed analysis for use in follow-up LLM calls. Includes the full user profile, Monte Carlo results, and Roth conversion recommendation in a format the LLM can reference directly when answering questions like "Is my success rate good enough?" or "Should I convert now or wait?"
+**`results_context()`** builds a structured text summary for follow-up LLM calls. Includes the full user profile, Monte Carlo results, Roth conversion recommendation, SS scenarios with the recommended strategy highlighted, current-year Roth advice, and RMD elimination option. Explicitly surfaces the recommended SS strategy so the LLM cannot default to "delay to 70 is always best."
 
 **`process_message()`** parsing logic:
 
@@ -348,12 +364,15 @@ State fields:
 **Priority chain:**
 
 ```
-1. Ollama (local)    → try first; $0 cost; needs Ollama service running
-2. Anthropic API     → cloud fallback; needs ANTHROPIC_API_KEY env var
-3. Static string     → always works; no dependencies
+1. Ollama (local)       → try first; $0 cost; needs Ollama service running
+2. Groq API             → fast cloud; needs GROQ_API_KEY env var
+                          default model: llama-3.3-70b-versatile (overridable via GROQ_MODEL)
+3. Anthropic API        → cloud fallback; needs ANTHROPIC_API_KEY env var
+                          uses claude-haiku-4-5 (fast, cheap)
+4. Static string        → always works; no dependencies
 ```
 
-Each layer returns `None` on failure so `explain()` cascades cleanly.
+Each layer returns `None` on failure so `explain()` cascades cleanly. Groq activates automatically when `GROQ_API_KEY` is set — on Render, this means Groq handles all production LLM calls without any local service.
 
 **`_ollama()` — key details:**
 
@@ -398,12 +417,15 @@ This is the simplest possible routing strategy and keeps the two paths completel
 
 ```
 1. Run SS claiming analysis (3 scenarios: claim 62 / FRA / 70)
-2. Run Monte Carlo × 3 (one per SS scenario, SS income offsets withdrawals)
-3. Run Roth conversion optimizer (uses best-success-rate SS scenario)
-4. Build combined context string for LLM
-5. Call explain() with Monte Carlo + Roth + SS context
-6. Set state.analysis_complete = True, store results
-7. Yield SSE "chat" (LLM summary) + SSE "dashboard" (full HTML)
+2. recommended_strategy() picks best scenario from life_expectancy vs breakeven ages
+3. Run Monte Carlo × 3 (one per SS scenario, SS income offsets withdrawals)
+4. Run Roth conversion optimizer
+5. Run RMD elimination calculator (Enhancement A)
+6. Run current-year Roth advisor if current_taxable_income provided (Enhancement B)
+7. Build combined context string for LLM (includes recommended SS strategy explicitly)
+8. Call explain() with full context → Ollama → Groq → Anthropic → static
+9. Set state.analysis_complete = True, store all results
+10. Yield SSE "chat" (LLM summary) + SSE "dashboard" (full HTML)
 ```
 
 **SSE event protocol:**
@@ -414,15 +436,20 @@ event: status     → update the running/thinking status badge
 event: dashboard  → replace the entire dashboard pane with new HTML
 ```
 
-**`_build_dashboard()` — Step 2 additions:**
+**`_build_dashboard()` — current sections:**
 
-Now takes `tax: dict` as a third argument. Renders two sections:
+*Section 1 — Monte Carlo:* Success rate KPI (color-coded green/yellow/red), portfolio at retirement, median at 90, annual spending, traditional savings breakdown.
 
-*Section 1 — Monte Carlo (unchanged from Step 1):* Success rate KPI (color-coded green/yellow/red), portfolio at retirement, median at 90, annual spending, traditional savings breakdown.
+*Section 2 — Roth Conversion Strategy:*
+- If `no_opportunity`: informational note explaining why
+- If beneficial: conversion window, annual conversion amount, tax rate, side-by-side RMD comparison, lifetime tax savings
+- Followed by "Strategy Comparison: Partial vs. Full RMD Elimination" 3-column table (Enhancement A) — shown only when partial conversion is recommended and `elimination.annual_conversion > 0`
 
-*Section 2 — Roth Conversion Strategy (new):*
-- If `no_opportunity`: shows a single informational note explaining why (no gap window, all Roth, or RMDs stay in same bracket as spending)
-- If beneficial: shows conversion window (years + age range), annual conversion amount, tax rate, side-by-side RMD comparison (before vs after), and lifetime tax savings in green
+*Section 3 — Social Security:* Three side-by-side cards (claim-62 / FRA / claim-70). The recommended scenario gets a green ★ Recommended badge and `kpi-primary` highlight based on life expectancy. Breakeven ages shown below.
+
+*Section 4 — Current Year Roth Advisor (Enhancement B):* Shown only if Q8 answered. Current bracket, room to fill before next bracket, stretch option.
+
+*Section 5 — Assumptions box:* Return assumptions, inflation rate, planning horizon.
 
 **Success rate color thresholds:**
 
@@ -476,30 +503,41 @@ A user types `"Can I retire at 63?"`. Complete path:
 8. User: "single" → state.filing_status = "single"
    SSE "chat": "What is your estimated monthly Social Security benefit at FRA?"
 
-9. User: "2200" → state.ss_monthly_benefit = 2200.0 → state.is_ready() = True
+9. User: "2200" → state.ss_monthly_benefit = 2200.0
+   SSE "chat": next Q8 → "What is your expected total taxable income this year?"
 
-10. HouseholdTwin constructed with all fields + TaxProfile + SocialSecurity.
+10. User: "$120k" → state.current_taxable_income = 120000; current_income_answered = True
+    SSE "chat": next Q9 → "What age do you expect to live to?"
 
-11. analyze_claiming_scenarios(pia=2200, birth_year=1960):
+11. User: "87" → state.life_expectancy = 87; life_expectancy_answered = True → is_ready() = True
+
+12. HouseholdTwin constructed with all fields + TaxProfile + SocialSecurity.
+
+13. analyze_claiming_scenarios(pia=2200, birth_year=1960):
     - Claim 62: $1,540/mo, Claim FRA: $2,200/mo, Claim 70: $2,728/mo
+    recommended_strategy() → life_expectancy=87 > breakeven_fra_vs_70 → "delay to 70"
     SSE "chat": "✓ Social Security claiming analysis"
 
-12. run_monte_carlo() × 3 (one per SS scenario, SS offsets withdrawals from claiming age):
+14. run_monte_carlo() × 3 (one per SS scenario):
     SSE "chat": "✓ Monte Carlo (10,000 simulations)"
-    SSE "chat": "✓ Portfolio projection to age 90"
 
-13. optimize_roth_conversion(twin):
-    - gap_years = 10 (retirement 63 → RMDs at 73)
+15. optimize_roth_conversion(twin): gap_years=10 (retire 63 → RMDs at 73)
     SSE "chat": "✓ Roth conversion optimizer"
 
-14. explain() called with combined context → Qwen3 returns 2-3 sentence summary.
+16. rmd_elimination_calculator(twin):
+    SSE "chat": "✓ RMD elimination analysis"
 
-15. state.analysis_complete = True; results stored.
+17. current_year_roth_advisor(120000, "single"):
+    SSE "chat": "✓ Current year Roth analysis"
 
-16. SSE "chat": LLM summary
-    SSE "dashboard": full _build_dashboard() HTML (Monte Carlo + Roth + SS sections)
+18. explain() called with full combined context → Groq returns 2-3 sentence summary.
 
-15. Browser injects HTML → requestAnimationFrame triggers progress bar animation.
+19. state.analysis_complete = True; all results stored.
+
+20. SSE "chat": LLM summary
+    SSE "dashboard": full _build_dashboard() HTML (Monte Carlo + Roth + SS + Enhancement sections)
+
+21. Browser injects HTML → requestAnimationFrame triggers progress bar animation.
 ```
 
 ### 6B — Follow-up Question (Conversation Mode)
@@ -577,8 +615,9 @@ uvicorn[standard]>=0.30 ASGI server (includes watchfiles for --reload)
 jinja2>=3.1             Template engine (installed; currently unused due to cache bug)
 python-multipart>=0.0.9 Required by FastAPI to parse Form(...) data
 numpy>=1.26             Monte Carlo matrix operations
-anthropic>=0.28         Cloud LLM fallback (optional at runtime; lazy import)
-pdfplumber>=0.11        PDF parsing for Step 6 document upload (not yet used)
+groq>=0.9               Groq cloud LLM client (used on Render; lazy import)
+anthropic>=0.28         Anthropic cloud LLM fallback (optional; lazy import)
+pdfplumber>=0.11        PDF parsing for document upload (Enhancement C — not yet used)
 ```
 
 **No external data libraries:** No yfinance, Alpha Vantage, or similar. All market data is encoded as constants in `Assumptions`. Tax rules are in `data/tax_brackets_2025.json`.
@@ -595,7 +634,7 @@ NextChapter/
 │
 ├── agents/
 │   ├── __init__.py
-│   └── planner.py          ConversationState (6 fields + analysis state),
+│   └── planner.py          ConversationState (9 Q&A fields + 5 state fields),
 │                           sequential Q&A, parsers, results_context()
 │
 ├── core/
@@ -611,13 +650,14 @@ NextChapter/
 │   ├── __init__.py
 │   ├── monte_carlo.py      10,000-path retirement simulation (numpy), SS income offset
 │   ├── tax_engine.py       tax_owed(), marginal_rate(), bracket_headroom(),
-│   │                       optimize_roth_conversion()
+│   │                       optimize_roth_conversion(), rmd_elimination_calculator(),
+│   │                       current_year_roth_advisor()
 │   └── ss_engine.py        get_fra(), benefit_at_age(), breakeven_age(),
-│                           analyze_claiming_scenarios()
+│                           analyze_claiming_scenarios(), recommended_strategy()
 │
 ├── llm/
 │   ├── __init__.py
-│   └── client.py           explain(): Ollama → Anthropic → static fallback
+│   └── client.py           explain(): Ollama → Groq → Anthropic → static fallback
 │
 ├── web/
 │   ├── static/
@@ -648,8 +688,19 @@ Then open `http://localhost:8000`.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OLLAMA_MODEL` | `qwen3:8b` | Which Ollama model to use |
-| `ANTHROPIC_API_KEY` | (none) | Enables cloud LLM fallback; not required |
+| `OLLAMA_MODEL` | `qwen3:8b` | Which Ollama model to use locally |
+| `GROQ_API_KEY` | (none) | Enables Groq cloud LLM (used in Render deployment) |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Override Groq model |
+| `ANTHROPIC_API_KEY` | (none) | Enables Anthropic cloud LLM fallback |
+
+**Render deployment:**
+
+```
+URL: render.com (free tier — spins down after 15 min idle, ~30s cold start)
+Start command: uvicorn api.app:app --host 0.0.0.0 --port $PORT --workers 1
+Env var set in Render dashboard: GROQ_API_KEY
+LLM chain on Render: Ollama fails silently → Groq handles all calls
+```
 
 **Ollama setup:**
 
@@ -661,7 +712,7 @@ ollama pull qwen3:8b
 # http://localhost:11434/api/tags should return 200
 ```
 
-**Typical conversation flow (Step 2):**
+**Typical conversation flow (9 questions):**
 
 1. "Can I retire at 63?"
 2. Current age → "55"
@@ -669,8 +720,11 @@ ollama pull qwen3:8b
 4. Annual spending → "$60k"
 5. % in traditional accounts → "80%"
 6. Filing status → "single"
-7. → Analysis runs (Monte Carlo + Roth optimizer + LLM summary + dashboard)
-8. Follow-up: "Should I start converting now?" → direct LLM answer, no re-analysis
+7. SS monthly benefit → "$2,200"
+8. Current taxable income → "$120k" (or "skip")
+9. Life expectancy → "87" (or "average")
+→ Analysis runs (Monte Carlo + Roth + RMD elimination + SS scenarios + current-year Roth + LLM)
+Follow-up: "Should I start converting now?" → direct LLM answer, no re-analysis
 
 ---
 
@@ -681,6 +735,11 @@ ollama pull qwen3:8b
 | **1** | Core skeleton — Monte Carlo, SSE streaming, two-pane UI, Ollama LLM | **Complete** | `api/app.py`, `engines/monte_carlo.py`, `agents/planner.py`, `llm/client.py` |
 | **2** | Tax Agent — Roth conversion optimizer, follow-up conversation, regex fixes | **Complete** | `engines/tax_engine.py`, `data/tax_brackets_2025.json`, extended `digital_twin.py`, `planner.py`, `app.py` |
 | **3** | SS Agent — Social Security claiming scenarios. FRA by birth year, early penalty (5/9%+5/12%/mo), delayed credit (+8%/yr to 70), breakeven analysis, 3× Monte Carlo. | **Complete** | `engines/ss_engine.py`, `data/ss_rules.json`, extended `digital_twin.py`, `planner.py`, `app.py` |
-| **4** | Charts — Monte Carlo fan chart (p10/p50/p90 bands over time), SS comparison bar. No npm build step — inline SVG or CDN Chart.js. | Pending | Dashboard additions in `app.py`, `web/static/charts.js` |
+| **Enh B** | Current Year Roth Advisor — Q8 asks current taxable income; shows bracket, room to fill, stretch option. | **Complete** | `engines/tax_engine.py` (`current_year_roth_advisor`), `planner.py`, `app.py` |
+| **Groq** | Groq cloud LLM — fallback chain now Ollama → Groq → Anthropic → static. Enables Render deployment. | **Complete** | `llm/client.py`, `render.yaml`, `requirements.txt` |
+| **SS Longevity** | Longevity-aware SS recommendation — Q9 asks life expectancy; `recommended_strategy()` picks optimal claiming age; recommended card highlighted green. | **Complete** | `engines/ss_engine.py` (`recommended_strategy`), `planner.py`, `app.py` |
+| **Enh A** | RMD Elimination Calculator — annuity-drain formula computes annual conversion to zero trad IRA by 73; comparison table on dashboard. | **Complete** | `engines/tax_engine.py` (`rmd_elimination_calculator`), `planner.py`, `app.py` |
+| **4** | Charts — Monte Carlo fan chart (p10/p50/p90 bands over time), SS comparison bar. No npm build step — inline SVG or CDN Chart.js. | **Pending** | Dashboard additions in `app.py`, `web/static/charts.js` |
+| **Enh C** | Paycheck Upload — PDF → auto-calculate current taxable income (pre-fills Q8). `pdfplumber` already in requirements. | Pending | `agents/document_agent.py`, `api/upload.py` |
 | **5** | Full Digital Twin + what-if scenarios. Side-by-side comparison (e.g., retire at 63 vs 65). Spouse support, spending categories, user-adjustable assumptions. Session persistence. | Pending | `core/digital_twin.py` expansion, `api/scenarios.py` |
-| **6** | Document upload. SS statement PDF, 1040, brokerage statement → agent extracts and pre-fills the twin. | Pending | `agents/document_agent.py`, `api/upload.py` (uses `pdfplumber` already in requirements) |
+| **6** | Medicare Agent + IRMAA. Depends on Step 5 (need full twin with income projections). | Pending | `engines/medicare_engine.py`, `data/irmaa_rules.json` |
