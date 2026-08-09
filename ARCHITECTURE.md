@@ -1,8 +1,8 @@
 # NextChapter — Architecture & Design Document
 
-**Version:** Enhancement A Complete  
-**Last updated:** 2026-08-06  
-**Status:** Monte Carlo + Tax Agent + SS Agent + Groq fallback + Longevity SS Rec + Enhancement B (Current Year Roth) + Enhancement A (RMD Elimination) live. Deployed on Render.
+**Version:** Accordion UI + Roth Window Optimizer Complete  
+**Last updated:** 2026-08-09  
+**Status:** Monte Carlo + Tax Agent + SS Agent + Groq fallback + Longevity SS Rec + Enhancement B (Current Year Roth) + Enhancement A (RMD Elimination) + Dashboard Accordion + Roth Conversion Window Optimizer live. Deployed on Render.
 
 ---
 
@@ -165,6 +165,7 @@ Married Filing Jointly brackets are the same rates at approximately double the t
 | `optimize_roth_conversion(twin)` | Full Roth conversion analysis — see algorithm below |
 | `rmd_elimination_calculator(twin)` | Computes annual Roth conversion to drain traditional IRA to $0 by age 73, eliminating all forced RMDs (Enhancement A) |
 | `current_year_roth_advisor(current_income, filing_status)` | One-time analysis: current bracket, room to fill before next bracket, stretch option (Enhancement B) |
+| `roth_conversion_window_optimizer(twin, ss_claiming_age, ss_monthly_at_claiming, life_expectancy, current_taxable_income)` | Projects taxable income across 4 life stages and identifies the optimal conversion window — which phase, which ages, how much/yr, and a plain-English recommendation |
 
 **`optimize_roth_conversion()` algorithm:**
 
@@ -203,6 +204,42 @@ Married Filing Jointly brackets are the same rates at approximately double the t
 **The key insight:** Only recommend Roth conversions when the projected RMD bracket is *higher* than the current spending bracket. Converting at a higher rate than future RMDs would cost more tax, not less. This check prevents the optimizer from recommending conversions in cases where traditional balances are modest and RMDs will stay in the same or lower bracket.
 
 **Returns dict with:** `gap_years`, `annual_conversion`, `conversion_tax_rate`, `rmd_no_conversion`, `rmd_with_conversion`, `annual_tax_cost`, `annual_rmd_tax_savings`, `lifetime_tax_savings`, `current_bracket`, `no_opportunity`, `no_opportunity_reason`.
+
+**`roth_conversion_window_optimizer()` algorithm:**
+
+```
+1. Build 4 life-stage phases (skipping any that don't apply):
+   Phase 1 — Working Years (current_age → retirement_age−1)
+              Income = current_taxable_income; bracket varies with salary.
+   Phase 2 — Early Retirement/Gap (retirement_age → min(ss_claiming_age, 72))
+              Income = annual_spending (portfolio withdrawals only); typically
+              the lowest bracket window.
+   Phase 3 — After SS Starts (ss_claiming_age → 72)
+              Income = spending_net_of_SS + ss_annual × 0.85 (85% SS taxable);
+              bracket typically higher than gap phase.
+   Phase 4 — RMD Years (73 → life_expectancy)
+              Income = first_RMD + ss_annual × 0.85; forced distributions,
+              no conversion recommended.
+
+2. Compute headroom and recommended_annual_conversion for each phase:
+   headroom = bracket_headroom(phase_taxable, filing_status, target_rate=phase_bracket)
+   recommended = min(headroom, trad_at_ret / phase_years)
+
+3. Find the RMD bracket from Phase 4. Candidates for optimal window must
+   have bracket STRICTLY BELOW the RMD bracket — same rate = no advantage.
+
+4. If no candidates → return "never" with plain-English explanation.
+   Otherwise: optimal = candidate with lowest bracket.
+
+5. Set current_recommendation:
+   "start_now"           — already retired and within the optimal phase's ages
+   "wait_for_retirement" — still working; drop to optimal bracket at retirement
+   "wait_for_window"     — retired but optimal window hasn't opened yet
+   "window_passed"       — optimal window has already closed
+   "never"               — no tax-efficient window exists
+```
+
+**Returns dict with:** `phases` (list of phase dicts), `optimal_phase_name`, `optimal_start_age`, `optimal_end_age`, `optimal_annual_conversion`, `optimal_bracket`, `total_converted`, `pct_converted`, `current_recommendation`, `current_recommendation_note`, `already_in_retirement`.
 
 ---
 
@@ -322,6 +359,7 @@ State fields:
   last_ss_results:  dict | None    — stored SS scenario output
   last_cy_roth_results: dict|None  — stored current-year Roth advisor output
   last_elim_results: dict | None   — stored RMD elimination calculator output
+  last_window_results: dict | None — stored Roth conversion window optimizer output
 ```
 
 **`is_ready()`** checks all seven data fields are non-None AND both sentinel booleans are True. Note: `ss_monthly_benefit` can be `0.0` (no SS) and `traditional_pct` can be `0.0` (all Roth) — both use `is not None` not bare truthiness.
@@ -438,18 +476,22 @@ event: dashboard  → replace the entire dashboard pane with new HTML
 
 **`_build_dashboard()` — current sections:**
 
-*Section 1 — Monte Carlo:* Success rate KPI (color-coded green/yellow/red), portfolio at retirement, median at 90, annual spending, traditional savings breakdown.
+All detail sections use native `<details>/<summary>` accordions — no JS required. The accordion chevron (`›`) rotates 90° via CSS when open. Monte Carlo summary and Assumptions box are always visible; the four detail sections are collapsed by default.
 
-*Section 2 — Roth Conversion Strategy:*
+*Always visible — Monte Carlo:* Success rate KPI (color-coded green/yellow/red), portfolio at retirement, median at 90, annual spending, traditional savings breakdown.
+
+*Accordion 1 — Roth Conversion Strategy:*
 - If `no_opportunity`: informational note explaining why
 - If beneficial: conversion window, annual conversion amount, tax rate, side-by-side RMD comparison, lifetime tax savings
 - Followed by "Strategy Comparison: Partial vs. Full RMD Elimination" 3-column table (Enhancement A) — shown only when partial conversion is recommended and `elimination.annual_conversion > 0`
 
-*Section 3 — Social Security:* Three side-by-side cards (claim-62 / FRA / claim-70). The recommended scenario gets a green ★ Recommended badge and `kpi-primary` highlight based on life expectancy. Breakeven ages shown below.
+*Accordion 2 — Roth Conversion Timeline (Window Optimizer):* Built by `_window_section()`. Shows 4 KPI cards (recommendation, optimal window ages, annual conversion amount in window, total pre-tax converted) + a per-phase bracket table (Phase | Ages | Est. Income | Bracket | Verdict). "★ Best" badge on the optimal phase; "Possible" badge on secondary candidates.
 
-*Section 4 — Current Year Roth Advisor (Enhancement B):* Shown only if Q8 answered. Current bracket, room to fill before next bracket, stretch option.
+*Accordion 3 — Social Security Claiming Strategy:* Three side-by-side cards (claim-62 / FRA / claim-70). The recommended scenario gets a green ★ Recommended badge and `kpi-primary` highlight based on life expectancy. Breakeven ages shown below.
 
-*Section 5 — Assumptions box:* Return assumptions, inflation rate, planning horizon.
+*Accordion 4 — Current Year Roth Advisor (Enhancement B):* Shown only if Q8 answered. Current bracket, room to fill before next bracket, stretch option.
+
+*Always visible — Assumptions box:* Return assumptions, inflation rate, planning horizon.
 
 **Success rate color thresholds:**
 
@@ -470,6 +512,8 @@ event: dashboard  → replace the entire dashboard pane with new HTML
 **CSS classes added Step 2:** `.section-header`, `.roth-note` (no-opportunity info card).
 
 **CSS classes added Step 3:** `.kpi-grid-3` (3-column grid for SS cards), `.ss-early` / `.ss-fra` / `.ss-late` (yellow/blue/green accent borders for the three claiming strategy cards).
+
+**CSS classes added (accordion):** `.accordion` (wraps `<details>`, adds top border + margin), `.accordion-header` (styles `<summary>`: uppercase label, chevron `›` via `::after`, hover color, hides default disclosure triangle). `details[open] > .accordion-header::after` rotates chevron 90° when expanded.
 
 ---
 
@@ -527,15 +571,18 @@ A user types `"Can I retire at 63?"`. Complete path:
 16. rmd_elimination_calculator(twin):
     SSE "chat": "✓ RMD elimination analysis"
 
-17. current_year_roth_advisor(120000, "single"):
+17. roth_conversion_window_optimizer(twin, ss_claiming_age=70, ss_monthly=2728, life_expectancy=87, current_taxable_income=120000):
+    SSE "chat": "✓ Roth conversion timeline"
+
+18. current_year_roth_advisor(120000, "single"):
     SSE "chat": "✓ Current year Roth analysis"
 
-18. explain() called with full combined context → Groq returns 2-3 sentence summary.
+19. explain() called with full combined context → Groq returns 2-3 sentence summary.
 
-19. state.analysis_complete = True; all results stored.
+20. state.analysis_complete = True; all results stored (including last_window_results).
 
-20. SSE "chat": LLM summary
-    SSE "dashboard": full _build_dashboard() HTML (Monte Carlo + Roth + SS + Enhancement sections)
+21. SSE "chat": LLM summary
+    SSE "dashboard": full _build_dashboard() HTML (Monte Carlo + 4 accordions + Assumptions)
 
 21. Browser injects HTML → requestAnimationFrame triggers progress bar animation.
 ```
@@ -634,7 +681,7 @@ NextChapter/
 │
 ├── agents/
 │   ├── __init__.py
-│   └── planner.py          ConversationState (9 Q&A fields + 5 state fields),
+│   └── planner.py          ConversationState (9 Q&A fields + 6 state fields),
 │                           sequential Q&A, parsers, results_context()
 │
 ├── core/
@@ -651,7 +698,7 @@ NextChapter/
 │   ├── monte_carlo.py      10,000-path retirement simulation (numpy), SS income offset
 │   ├── tax_engine.py       tax_owed(), marginal_rate(), bracket_headroom(),
 │   │                       optimize_roth_conversion(), rmd_elimination_calculator(),
-│   │                       current_year_roth_advisor()
+│   │                       current_year_roth_advisor(), roth_conversion_window_optimizer()
 │   └── ss_engine.py        get_fra(), benefit_at_age(), breakeven_age(),
 │                           analyze_claiming_scenarios(), recommended_strategy()
 │
@@ -661,7 +708,7 @@ NextChapter/
 │
 ├── web/
 │   ├── static/
-│   │   └── style.css       Dark theme, KPI grid, progress bar, .section-header, .roth-note
+│   │   └── style.css       Dark theme, KPI grid, progress bar, .section-header, .roth-note, .accordion
 │   └── templates/
 │       └── index.html      Two-pane layout, SSE JS client
 │
@@ -739,6 +786,8 @@ Follow-up: "Should I start converting now?" → direct LLM answer, no re-analysi
 | **Groq** | Groq cloud LLM — fallback chain now Ollama → Groq → Anthropic → static. Enables Render deployment. | **Complete** | `llm/client.py`, `render.yaml`, `requirements.txt` |
 | **SS Longevity** | Longevity-aware SS recommendation — Q9 asks life expectancy; `recommended_strategy()` picks optimal claiming age; recommended card highlighted green. | **Complete** | `engines/ss_engine.py` (`recommended_strategy`), `planner.py`, `app.py` |
 | **Enh A** | RMD Elimination Calculator — annuity-drain formula computes annual conversion to zero trad IRA by 73; comparison table on dashboard. | **Complete** | `engines/tax_engine.py` (`rmd_elimination_calculator`), `planner.py`, `app.py` |
+| **Accordion** | Dashboard detail sections use native `<details>/<summary>` accordions (no JS). Chevron rotates on open. | **Complete** | `api/app.py`, `web/static/style.css` |
+| **Win Opt** | Roth Conversion Window Optimizer — projects 4 life stages, finds optimal conversion phase, sets recommendation (start_now / wait / passed / never). | **Complete** | `engines/tax_engine.py` (`roth_conversion_window_optimizer`), `api/app.py` (`_window_section`), `agents/planner.py` |
 | **4** | Charts — Monte Carlo fan chart (p10/p50/p90 bands over time), SS comparison bar. No npm build step — inline SVG or CDN Chart.js. | **Pending** | Dashboard additions in `app.py`, `web/static/charts.js` |
 | **Enh C** | Paycheck Upload — PDF → auto-calculate current taxable income (pre-fills Q8). `pdfplumber` already in requirements. | Pending | `agents/document_agent.py`, `api/upload.py` |
 | **5** | Full Digital Twin + what-if scenarios. Side-by-side comparison (e.g., retire at 63 vs 65). Spouse support, spending categories, user-adjustable assumptions. Session persistence. | Pending | `core/digital_twin.py` expansion, `api/scenarios.py` |
