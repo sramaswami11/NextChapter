@@ -22,6 +22,7 @@ class ConversationState:
     last_ss_results: Optional[dict] = None
     last_cy_roth_results: Optional[dict] = None
     last_elim_results: Optional[dict] = None
+    last_window_results: Optional[dict] = None
 
     def is_ready(self) -> bool:
         return (
@@ -154,7 +155,24 @@ class ConversationState:
         else:
             elim_part = ""
 
-        return "  ".join(filter(None, [profile, mc_part, tax_part, elim_part, ss_part, cy_part]))
+        window = self.last_window_results or {}
+        if window:
+            rec = window.get("current_recommendation", "")
+            note = window.get("current_recommendation_note", "")
+            if rec not in ("", "never") and window.get("optimal_bracket") is not None:
+                window_part = (
+                    f"Roth conversion timing: {note} "
+                    f"Optimal phase: '{window.get('optimal_phase_name', '')}' at "
+                    f"{int(window['optimal_bracket'] * 100)}% bracket — "
+                    f"convert ${window['optimal_annual_conversion']:,}/yr "
+                    f"(ages {window['optimal_start_age']}–{window['optimal_end_age']})."
+                )
+            else:
+                window_part = f"Roth conversion timing: {note}" if note else ""
+        else:
+            window_part = ""
+
+        return "  ".join(filter(None, [profile, mc_part, tax_part, elim_part, window_part, ss_part, cy_part]))
 
 
 def _parse_percentage(text: str) -> Optional[float]:

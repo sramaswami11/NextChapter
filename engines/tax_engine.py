@@ -283,6 +283,246 @@ def rmd_elimination_calculator(twin: HouseholdTwin) -> dict:
     }
 
 
+def roth_conversion_window_optimizer(
+    twin: HouseholdTwin,
+    ss_claiming_age: float,
+    ss_monthly_at_claiming: float,
+    life_expectancy: int = 90,
+    current_taxable_income: float | None = None,
+) -> dict:
+    """
+    Project taxable income across life stages and identify the optimal Roth conversion
+    window: which phase has the lowest bracket, when to start, when to stop, and how
+    much to convert. Answers 'when is the best time?' without LLM reasoning.
+
+    ss_claiming_age: age SS benefits begin (62, FRA, or 70); pass 999 if no SS.
+    ss_monthly_at_claiming: actual monthly benefit at that age (not PIA).
+    """
+    fs = twin.tax_profile.filing_status
+    a = twin.assumptions
+    mu = a.stock_pct * a.stock_return + (1 - a.stock_pct) * a.bond_return
+
+    current_age = twin.person.age
+    retirement_age = twin.person.retirement_age
+    annual_spending = twin.spending.annual
+    ss_annual = ss_monthly_at_claiming * 12
+    already_retired = current_age >= retirement_age
+
+    years_to_ret = max(0, retirement_age - current_age)
+    trad_at_ret = twin.accounts.traditional_balance * (1 + mu) ** years_to_ret
+
+    phases: list[dict] = []
+
+    # ── Phase 1: Working years ─────────────────────────────────────────────────
+    if current_age < retirement_age:
+        pre_bracket = marginal_rate(current_taxable_income, fs) if current_taxable_income else None
+        phases.append({
+            "name": "Working Years",
+            "start_age": current_age,
+            "end_age": retirement_age - 1,
+            "years": retirement_age - current_age,
+            "base_taxable": round(current_taxable_income) if current_taxable_income else None,
+            "bracket": pre_bracket,
+            "headroom": 0,
+            "recommended_annual_conversion": 0,
+            "conversion_friendly": False,
+            "note": "Earned income active — bracket varies with salary.",
+        })
+
+    # ── Phase 2: Gap window (retired, no SS, no RMD) ──────────────────────────
+    gap_start = retirement_age
+    gap_end = (
+        min(int(ss_claiming_age) - 1, _RMD_START - 1) if ss_annual > 0
+        else _RMD_START - 1
+    )
+
+    if gap_start <= gap_end and retirement_age < _RMD_START:
+        gap_years = gap_end - gap_start + 1
+        # Use annual_spending as income proxy (all from portfolio); consistent with optimize_roth_conversion
+        gap_taxable = annual_spending
+        gap_bracket = marginal_rate(gap_taxable, fs)
+        gap_headroom = bracket_headroom(gap_taxable, fs, target_rate=gap_bracket)
+        if gap_headroom == float("inf"):
+            gap_headroom = 0.0
+        gap_conv = min(gap_headroom, trad_at_ret / gap_years) if gap_years > 0 else 0.0
+        gap_conv = max(0.0, gap_conv)
+        phase_name = "Early Retirement (Pre-SS)" if ss_annual > 0 else "Retirement (Pre-RMD)"
+        phases.append({
+            "name": phase_name,
+            "start_age": gap_start,
+            "end_age": gap_end,
+            "years": gap_years,
+            "base_taxable": round(gap_taxable),
+            "bracket": gap_bracket,
+            "headroom": round(gap_headroom),
+            "recommended_annual_conversion": round(gap_conv),
+            "conversion_friendly": gap_headroom > 0 and gap_conv > 0,
+            "note": "No SS, no RMDs — typically the lowest-bracket window.",
+        })
+
+    # ── Phase 3: After SS starts (pre-RMD) ────────────────────────────────────
+    if ss_annual > 0:
+        ss_phase_start = max(retirement_age, int(ss_claiming_age))
+        ss_phase_end = _RMD_START - 1  # 72
+        if ss_phase_start <= ss_phase_end:
+            ss_years = ss_phase_end - ss_phase_start + 1
+            # Spending not covered by SS comes from portfolio; plus 85% of SS is taxable
+            spending_net = max(0.0, annual_spending - ss_annual)
+            ss_taxable = spending_net + ss_annual * 0.85
+            ss_bracket = marginal_rate(ss_taxable, fs)
+            ss_headroom = bracket_headroom(ss_taxable, fs, target_rate=ss_bracket)
+            if ss_headroom == float("inf"):
+                ss_headroom = 0.0
+            ss_conv = min(ss_headroom, trad_at_ret / ss_years) if ss_years > 0 else 0.0
+            ss_conv = max(0.0, ss_conv)
+            phases.append({
+                "name": f"After SS Starts (age {int(ss_claiming_age)})",
+                "start_age": ss_phase_start,
+                "end_age": ss_phase_end,
+                "years": ss_years,
+                "base_taxable": round(ss_taxable),
+                "bracket": ss_bracket,
+                "headroom": round(ss_headroom),
+                "recommended_annual_conversion": round(ss_conv),
+                "conversion_friendly": ss_headroom > 0 and ss_conv > 0,
+                "note": f"SS ${ss_annual:,.0f}/yr raises taxable income; bracket typically higher.",
+            })
+
+    # ── Phase 4: RMD years (73+) ──────────────────────────────────────────────
+    if life_expectancy >= _RMD_START:
+        # Estimate trad balance at 73: grow to retirement, then simulate drawdown
+        trad_running = trad_at_ret
+        for yr in range(max(0, _RMD_START - retirement_age)):
+            age_in_yr = retirement_age + yr
+            ss_in_yr = ss_annual if age_in_yr >= ss_claiming_age else 0.0
+            withdrawal = max(0.0, annual_spending - ss_in_yr)
+            trad_running = max(0.0, trad_running * (1 + mu) - withdrawal)
+        first_rmd = trad_running / _RMD_DIVISORS.get(73, 26.5)
+        rmd_taxable = first_rmd + ss_annual * 0.85
+        rmd_bracket = marginal_rate(rmd_taxable, fs)
+        phases.append({
+            "name": "RMD Years (73+)",
+            "start_age": _RMD_START,
+            "end_age": life_expectancy,
+            "years": life_expectancy - _RMD_START + 1,
+            "base_taxable": round(rmd_taxable),
+            "bracket": rmd_bracket,
+            "headroom": 0,
+            "recommended_annual_conversion": 0,
+            "conversion_friendly": False,
+            "note": f"Forced RMDs ~${round(first_rmd):,}/yr. Goal is to shrink this via earlier conversions.",
+        })
+
+    # ── Find optimal window ────────────────────────────────────────────────────
+    # Converting only helps if it's taxed STRICTLY BELOW the projected RMD rate.
+    # Use exact name match to avoid matching "Retirement (Pre-RMD)" phase.
+    _RMD_PHASE_NAME = "RMD Years (73+)"
+    rmd_phase = next((p for p in phases if p["name"] == _RMD_PHASE_NAME), None)
+    rmd_bracket_val = rmd_phase["bracket"] if rmd_phase else None
+
+    candidates = [
+        p for p in phases
+        if p["name"] not in ("Working Years", _RMD_PHASE_NAME)
+        and p.get("bracket") is not None
+        and p.get("conversion_friendly")
+        and p.get("recommended_annual_conversion", 0) > 0
+        and (rmd_bracket_val is None or p["bracket"] < rmd_bracket_val)
+    ]
+
+    if not candidates:
+        ret_phases = [p for p in phases if p.get("bracket") is not None]
+        pre_rmd_phases = [
+            p for p in ret_phases
+            if p["name"] not in ("Working Years", _RMD_PHASE_NAME)
+        ]
+        if rmd_bracket_val is not None and pre_rmd_phases and all(
+            p["bracket"] >= rmd_bracket_val for p in pre_rmd_phases
+        ):
+            lowest_pre = min(pre_rmd_phases, key=lambda p: p["bracket"])
+            same_rate = lowest_pre["bracket"] == rmd_bracket_val
+            note = (
+                f"Your projected RMDs at 73 will be taxed at {int(rmd_bracket_val * 100)}% — "
+                f"{'the same rate as' if same_rate else 'lower than'} your "
+                f"{int(lowest_pre['bracket'] * 100)}% retirement bracket. "
+                f"Converting now {'offers no tax advantage' if same_rate else 'costs more than letting RMDs happen'}. "
+                f"No conversion recommended."
+            )
+        elif ret_phases:
+            best = min(ret_phases, key=lambda p: p["bracket"])
+            note = (
+                f"In your lowest-bracket phase ({best['name']}, "
+                f"{int(best['bracket'] * 100)}%), there is no headroom for tax-efficient "
+                f"conversion. Roth conversion is not recommended."
+            )
+        else:
+            note = "No retirement phases found — retiring at or after RMD age."
+        return {
+            "phases": phases,
+            "optimal_phase_name": None,
+            "optimal_start_age": None,
+            "optimal_end_age": None,
+            "optimal_annual_conversion": 0,
+            "optimal_bracket": None,
+            "total_converted": 0,
+            "pct_converted": 0.0,
+            "current_recommendation": "never",
+            "current_recommendation_note": note,
+            "already_in_retirement": already_retired,
+        }
+
+    optimal = min(candidates, key=lambda p: p["bracket"])
+    in_window_now = (
+        already_retired
+        and optimal["start_age"] <= current_age <= optimal["end_age"]
+    )
+
+    if in_window_now:
+        rec = "start_now"
+        years_left = optimal["end_age"] - current_age
+        rec_note = (
+            f"You're in the optimal window now ({optimal['name']}). "
+            f"Convert ${optimal['recommended_annual_conversion']:,}/yr at the "
+            f"{int(optimal['bracket'] * 100)}% bracket. "
+            f"Window closes at age {optimal['end_age']} — {years_left} year{'s' if years_left != 1 else ''} remaining."
+        )
+    elif not already_retired:
+        rec = "wait_for_retirement"
+        rec_note = (
+            f"Start converting at retirement (age {retirement_age}). "
+            f"Your bracket drops to {int(optimal['bracket'] * 100)}% when earned income stops. "
+            f"Convert ${optimal['recommended_annual_conversion']:,}/yr through age {optimal['end_age']}."
+        )
+    elif current_age < optimal["start_age"]:
+        rec = "wait_for_window"
+        rec_note = (
+            f"Your best window opens at age {optimal['start_age']} ({optimal['name']}). "
+            f"Convert ${optimal['recommended_annual_conversion']:,}/yr at {int(optimal['bracket'] * 100)}% bracket then."
+        )
+    else:
+        rec = "window_passed"
+        rec_note = (
+            f"The optimal window ({optimal['name']}) has passed. "
+            f"Check the Roth Conversion section above for current-year opportunities."
+        )
+
+    total_conv = optimal["recommended_annual_conversion"] * optimal["years"]
+    pct_conv = round(total_conv / trad_at_ret * 100, 1) if trad_at_ret > 0 else 0.0
+
+    return {
+        "phases": phases,
+        "optimal_phase_name": optimal["name"],
+        "optimal_start_age": optimal["start_age"],
+        "optimal_end_age": optimal["end_age"],
+        "optimal_annual_conversion": optimal["recommended_annual_conversion"],
+        "optimal_bracket": optimal["bracket"],
+        "total_converted": round(total_conv),
+        "pct_converted": pct_conv,
+        "current_recommendation": rec,
+        "current_recommendation_note": rec_note,
+        "already_in_retirement": already_retired,
+    }
+
+
 def current_year_roth_advisor(current_income: float, filing_status: str) -> dict:
     """
     Given the user's current-year gross income, compute Roth conversion

@@ -11,7 +11,7 @@ from core.digital_twin import (
     Accounts, Assumptions, HouseholdTwin, Person, Spending, TaxProfile, SocialSecurity
 )
 from engines.monte_carlo import run_monte_carlo
-from engines.tax_engine import optimize_roth_conversion, current_year_roth_advisor, rmd_elimination_calculator
+from engines.tax_engine import optimize_roth_conversion, current_year_roth_advisor, rmd_elimination_calculator, roth_conversion_window_optimizer
 from engines.ss_engine import analyze_claiming_scenarios, benefit_at_age, recommended_strategy
 from llm.client import explain
 
@@ -134,6 +134,7 @@ async def chat(request: Request, message: str = Form(...)):
             mc_fra = run_monte_carlo(twin, ss_monthly=ben_fra, ss_start_age=fra)
             mc_70  = run_monte_carlo(twin, ss_monthly=ben_70,  ss_start_age=70.0)
         else:
+            ben_62 = ben_fra = ben_70 = 0.0
             mc_62 = mc_fra = mc_70 = mc_no_ss
 
         # Use the FRA scenario as the "main" result for overall summary
@@ -148,6 +149,28 @@ async def chat(request: Request, message: str = Form(...)):
 
         elim = rmd_elimination_calculator(twin)
         yield _sse("chat", "✓ RMD elimination analysis")
+        await asyncio.sleep(0.2)
+
+        # ── Roth Conversion Window Optimizer ──────────────────────────────────
+        le = state.life_expectancy or 84
+        if pia_monthly > 0 and ss_data:
+            _win_rec = recommended_strategy(ss_data, le)
+            if _win_rec == "claim_62":
+                _win_ss_age, _win_ss_monthly = 62.0, ben_62
+            elif _win_rec == "claim_fra":
+                _win_ss_age, _win_ss_monthly = float(ss_data["fra"]), ben_fra
+            else:
+                _win_ss_age, _win_ss_monthly = 70.0, ben_70
+        else:
+            _win_ss_age, _win_ss_monthly = 999.0, 0.0
+        window = roth_conversion_window_optimizer(
+            twin,
+            ss_claiming_age=_win_ss_age,
+            ss_monthly_at_claiming=_win_ss_monthly,
+            life_expectancy=le,
+            current_taxable_income=state.current_taxable_income,
+        )
+        yield _sse("chat", "✓ Roth conversion timeline")
         await asyncio.sleep(0.2)
 
         cy_roth = None
@@ -246,9 +269,10 @@ async def chat(request: Request, message: str = Form(...)):
         state.last_ss_results = ss_data
         state.last_cy_roth_results = cy_roth
         state.last_elim_results = elim
+        state.last_window_results = window
 
         yield _sse("chat", summary)
-        yield _sse("dashboard", _build_dashboard(results, twin, tax, ss_data, mc_62, mc_fra, mc_70, cy_roth, state.life_expectancy, elim))
+        yield _sse("dashboard", _build_dashboard(results, twin, tax, ss_data, mc_62, mc_fra, mc_70, cy_roth, state.life_expectancy, elim, window))
 
     response = StreamingResponse(generate(), media_type="text/event-stream")
     response.headers["Cache-Control"] = "no-cache"
@@ -264,6 +288,109 @@ def _sse(event: str, html: str) -> str:
     return f"event: {event}\ndata: {data}\n\n"
 
 
+def _window_section(window: dict) -> str:
+    if not window:
+        return ""
+
+    rec = window.get("current_recommendation", "")
+    rec_note = window.get("current_recommendation_note", "")
+    optimal_start = window.get("optimal_start_age")
+    optimal_end = window.get("optimal_end_age")
+    optimal_conv = window.get("optimal_annual_conversion", 0)
+    optimal_bracket = window.get("optimal_bracket")
+    phases = window.get("phases", [])
+
+    _rec_colors = {
+        "start_now": "#22c55e",
+        "wait_for_retirement": "#f59e0b",
+        "wait_for_window": "#f59e0b",
+        "window_passed": "#94a3b8",
+        "never": "#94a3b8",
+    }
+    _rec_labels = {
+        "start_now": "Start Converting Now",
+        "wait_for_retirement": "Wait Until Retirement",
+        "wait_for_window": "Wait for Optimal Window",
+        "window_passed": "Optimal Window Has Passed",
+        "never": "Conversion Not Recommended",
+    }
+    rec_color = _rec_colors.get(rec, "#94a3b8")
+    rec_label = _rec_labels.get(rec, "See Analysis")
+
+    total_conv = window.get("total_converted", 0)
+    pct_conv = window.get("pct_converted", 0.0)
+
+    if optimal_start is not None and optimal_end is not None and optimal_conv > 0 and optimal_bracket is not None:
+        top = f"""<div class="kpi-grid">
+  <div class="kpi kpi-primary">
+    <div class="kpi-label">When to Convert</div>
+    <div class="kpi-value" style="font-size:20px;color:{rec_color}">{rec_label}</div>
+    <div class="kpi-sub">{rec_note}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Optimal Window</div>
+    <div class="kpi-value">Ages {optimal_start}&ndash;{optimal_end}</div>
+    <div class="kpi-sub">{optimal_end - optimal_start + 1} years &nbsp;&bull;&nbsp; {window.get("optimal_phase_name","")}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Convert Per Year (in window)</div>
+    <div class="kpi-value">${optimal_conv:,.0f}</div>
+    <div class="kpi-sub">at {int(optimal_bracket * 100)}% bracket</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Total Pre-Tax Converted to Roth</div>
+    <div class="kpi-value">${total_conv:,.0f}</div>
+    <div class="kpi-sub">{pct_conv:.1f}% of traditional balance at retirement &nbsp;&bull;&nbsp; before RMD age 73</div>
+  </div>
+</div>"""
+    else:
+        top = f'<div class="roth-note" style="color:{rec_color};margin-top:12px">{rec_note}</div>'
+
+    _col = "display:grid;grid-template-columns:2fr 0.8fr 1.1fr 0.7fr 1.2fr;gap:6px;align-items:center"
+    header = (
+        f'<div style="{_col};padding:4px 0 8px;border-bottom:1px solid #1c2035;'
+        f'font-size:11px;font-weight:600;color:#5a6080;text-transform:uppercase;letter-spacing:.5px">'
+        f'<span>Phase</span><span>Ages</span><span>Est. Income</span><span>Bracket</span><span>Verdict</span></div>'
+    )
+
+    rows = ""
+    opt_name = window.get("optimal_phase_name")
+    for p in phases:
+        name = p["name"]
+        ages = f"{p['start_age']}&ndash;{p['end_age']}"
+        inc = f"${p['base_taxable']:,}" if p.get("base_taxable") is not None else "Variable"
+        brk = f"{int(p['bracket'] * 100)}%" if p.get("bracket") is not None else "&mdash;"
+        is_opt = name == opt_name and p.get("conversion_friendly") and p.get("recommended_annual_conversion", 0) > 0
+        is_ok = p.get("conversion_friendly") and not is_opt and p.get("recommended_annual_conversion", 0) > 0
+        if is_opt:
+            badge = '<span style="background:#22c55e;color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">&#9733; Best</span>'
+        elif is_ok:
+            badge = '<span style="background:#f59e0b;color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">Possible</span>'
+        elif name == "Working Years":
+            badge = '<span style="color:#5a6080;font-size:12px">Variable</span>'
+        else:
+            badge = '<span style="color:#5a6080;font-size:12px">Not optimal</span>'
+
+        note_html = f'<div style="font-size:11px;color:#5a6080;padding:0 0 4px;grid-column:1/-1">{p.get("note","")}</div>'
+        rows += (
+            f'<div style="{_col};padding:6px 0 2px;border-bottom:1px solid #1c2035;font-size:13px;color:#c8cdd8">'
+            f'<span>{name}</span>'
+            f'<span style="color:#5a6080">{ages}</span>'
+            f'<span style="color:#5a6080">{inc}</span>'
+            f'<span style="color:#5a6080">{brk}</span>'
+            f'<span>{badge}</span></div>'
+            f'<div style="{_col};padding:0 0 4px;border-bottom:1px solid #1c2035">{note_html}</div>'
+        )
+
+    table = f'<div class="assumptions-box"><div class="assumptions-title">Tax Bracket by Life Stage</div>{header}{rows}</div>'
+
+    return f"""<details class="accordion">
+<summary class="accordion-header">Roth Conversion Timeline &mdash; When to Convert</summary>
+{top}
+{table}
+</details>"""
+
+
 def _build_dashboard(
     results: dict,
     twin: HouseholdTwin,
@@ -275,6 +402,7 @@ def _build_dashboard(
     cy_roth: dict | None = None,
     life_expectancy: int | None = None,
     elim: dict | None = None,
+    window: dict | None = None,
 ) -> str:
     rate = results["success_rate"]
     bar = int(rate)
@@ -301,8 +429,8 @@ def _build_dashboard(
         long_term_no = tax.get("no_opportunity") or tax["annual_conversion"] == 0
         cy_header = "Current Year Tax Bracket (For Reference)" if long_term_no else "Current Year Roth Opportunity"
 
-        cy_section = f"""
-<div class="section-header">{cy_header}</div>
+        cy_section = f"""<details class="accordion">
+<summary class="accordion-header">{cy_header}</summary>
 <div class="kpi-grid">
   <div class="kpi kpi-primary">
     <div class="kpi-label">Your Tax Bracket</div>
@@ -330,6 +458,7 @@ def _build_dashboard(
   <div class="assumptions-row"><span>Total conversion (fill both brackets)</span><span>${cy_roth['headroom_to_next_ceiling']:,.0f}</span></div>
   <div class="assumptions-row"><span>Total additional tax</span><span>${cy_roth['tax_to_fill_next']:,.0f}</span></div>
 </div>"""
+        cy_section += "</details>"
     else:
         cy_section = ""
 
@@ -358,7 +487,7 @@ def _build_dashboard(
             )
         else:
             msg = "No Roth conversion opportunity identified."
-        roth_section = f'<div class="roth-note">{msg}</div>'
+        roth_section = f'<details class="accordion"><summary class="accordion-header">Roth Conversion</summary><div class="roth-note">{msg}</div></details>'
     else:
         gap = tax["gap_years"]
         ret_age = twin.person.retirement_age
@@ -370,8 +499,8 @@ def _build_dashboard(
         cur_bracket = int(tax["current_bracket"] * 100)
         savings_color = "#22c55e" if savings > 0 else "#f59e0b"
 
-        roth_section = f"""
-<div class="section-header">Roth Conversion Strategy</div>
+        roth_section = f"""<details class="accordion">
+<summary class="accordion-header">Roth Conversion Strategy</summary>
 <div class="kpi-grid">
   <div class="kpi kpi-primary">
     <div class="kpi-label">Conversion Window</div>
@@ -419,6 +548,7 @@ def _build_dashboard(
   <div class="assumptions-row"><span>Annual tax cost</span><span>${tax['annual_tax_cost']:,.0f}</span><span>${elim_tax:,.0f}</span></div>
   <div class="assumptions-row"><span>Est. lifetime savings</span><span>${savings:,.0f}</span><span>${elim_net:,.0f}</span></div>
 </div>"""
+        roth_section += "</details>"
 
     # --- Social Security section ---
     if ss_data and twin.ss.monthly_pia > 0:
@@ -438,8 +568,8 @@ def _build_dashboard(
         def _rec_badge(key):
             return ' &nbsp;<span style="font-size:11px;background:#22c55e;color:#fff;padding:2px 6px;border-radius:4px">&#9733; Recommended</span>' if ss_rec == key else ""
 
-        ss_section = f"""
-<div class="section-header">Social Security Claiming Strategy</div>
+        ss_section = f"""<details class="accordion">
+<summary class="accordion-header">Social Security Claiming Strategy</summary>
 <div class="kpi-grid-3">
   <div class="kpi ss-early{"  kpi-primary" if ss_rec == "claim_62" else ""}">
     <div class="kpi-label">Claim at 62 (Early){_rec_badge("claim_62")}</div>
@@ -466,9 +596,11 @@ def _build_dashboard(
   <div class="assumptions-row"><span>Claim FRA vs 70 &mdash; break even at age</span><span>{be_fra_70}</span></div>
   <div class="assumptions-row"><span>Claim 62 vs 70 &mdash; break even at age</span><span>{be_62_70}</span></div>
   <div class="assumptions-row"><span>Your estimated life expectancy</span><span>age {le}</span></div>
-</div>"""
+</div></details>"""
     else:
-        ss_section = '<div class="roth-note">Social Security: not included in this analysis.</div>'
+        ss_section = '<details class="accordion"><summary class="accordion-header">Social Security</summary><div class="roth-note">Social Security: not included in this analysis.</div></details>'
+
+    win_section = _window_section(window) if window else ""
 
     return f"""
 <div class="dash-header">Retirement at {twin.person.retirement_age}</div>
@@ -510,6 +642,7 @@ def _build_dashboard(
   <div class="assumptions-row"><span>Inflation</span><span>2.5%</span></div>
 </div>
 {roth_section}
+{win_section}
 {cy_section}
 {ss_section}
 """
