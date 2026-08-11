@@ -9,6 +9,8 @@ def run_monte_carlo(
     plan_to_age: int = 90,
     ss_monthly: float = 0.0,
     ss_start_age: float = 0.0,
+    spouse_ss_monthly: float = 0.0,
+    spouse_ss_start_age: float = 0.0,
 ) -> dict:
     years_to_retirement = max(0, twin.person.retirement_age - twin.person.age)
     years_in_retirement = plan_to_age - twin.person.retirement_age
@@ -28,17 +30,18 @@ def run_monte_carlo(
     portfolios = np.full(n_sims, portfolio_at_retirement)
     annual_spending = twin.spending.annual
     ss_annual = ss_monthly * 12.0
+    spouse_ss_annual = spouse_ss_monthly * 12.0
 
     for yr in range(years_in_retirement):
         current_age = twin.person.retirement_age + yr
         real_spending = annual_spending * (1 + a.inflation) ** yr
 
-        # SS income reduces portfolio withdrawals once claiming age is reached
+        ss_income = 0.0
         if ss_annual > 0 and ss_start_age > 0 and current_age >= ss_start_age:
-            real_ss = ss_annual * (1 + a.inflation) ** yr
-            net_withdrawal = max(0.0, real_spending - real_ss)
-        else:
-            net_withdrawal = real_spending
+            ss_income += ss_annual * (1 + a.inflation) ** yr
+        if spouse_ss_annual > 0 and spouse_ss_start_age > 0 and current_age >= spouse_ss_start_age:
+            ss_income += spouse_ss_annual * (1 + a.inflation) ** yr
+        net_withdrawal = max(0.0, real_spending - ss_income)
 
         portfolios = portfolios * (1 + annual_returns[:, yr]) - net_withdrawal
 

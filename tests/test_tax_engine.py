@@ -370,3 +370,43 @@ class TestWindowOptimizerSpousePhase:
         assert result["current_recommendation"] in (
             "start_now", "wait_for_retirement", "wait_for_window", "window_passed", "never"
         )
+
+    def test_spouse_ss_splits_phase3_when_starts_later(self):
+        # Primary claims at 67, spouse at 70 → two sub-phases instead of one
+        twin = self._base_twin()
+        result = roth_conversion_window_optimizer(
+            twin,
+            ss_claiming_age=67, ss_monthly_at_claiming=2_200,
+            spouse_ss_monthly=1_600, spouse_ss_start_age=70,
+        )
+        phase_names = [p["name"] for p in result["phases"]]
+        assert any("Your SS" in n for n in phase_names)
+        assert any("Both SS" in n for n in phase_names)
+
+    def test_spouse_ss_no_split_when_starts_same_time(self):
+        # Both claim at 67 → single combined phase
+        twin = self._base_twin()
+        result = roth_conversion_window_optimizer(
+            twin,
+            ss_claiming_age=67, ss_monthly_at_claiming=2_200,
+            spouse_ss_monthly=1_600, spouse_ss_start_age=67,
+        )
+        phase_names = [p["name"] for p in result["phases"]]
+        assert not any("Both SS" in n for n in phase_names)
+        assert any("After SS Starts" in n for n in phase_names)
+
+    def test_spouse_ss_included_in_rmd_phase_income(self):
+        # With spouse SS active at 73, rmd_taxable should be higher than without
+        twin = self._base_twin()
+        result_no_spouse = roth_conversion_window_optimizer(
+            twin, ss_claiming_age=67, ss_monthly_at_claiming=2_200,
+            life_expectancy=85,
+        )
+        result_with_spouse = roth_conversion_window_optimizer(
+            twin, ss_claiming_age=67, ss_monthly_at_claiming=2_200,
+            spouse_ss_monthly=1_600, spouse_ss_start_age=67,
+            life_expectancy=85,
+        )
+        rmd_no = next(p for p in result_no_spouse["phases"] if p["name"] == "RMD Years (73+)")
+        rmd_with = next(p for p in result_with_spouse["phases"] if p["name"] == "RMD Years (73+)")
+        assert rmd_with["base_taxable"] >= rmd_no["base_taxable"]

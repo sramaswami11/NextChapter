@@ -292,6 +292,8 @@ def roth_conversion_window_optimizer(
     spouse_working: bool = False,
     spouse_income: float | None = None,
     spouse_retirement_age: int | None = None,
+    spouse_ss_monthly: float = 0.0,
+    spouse_ss_start_age: float = 999.0,
 ) -> dict:
     """
     Project taxable income across life stages and identify the optimal Roth conversion
@@ -309,6 +311,7 @@ def roth_conversion_window_optimizer(
     retirement_age = twin.person.retirement_age
     annual_spending = twin.spending.annual
     ss_annual = ss_monthly_at_claiming * 12
+    spouse_ss_annual = spouse_ss_monthly * 12.0
     already_retired = current_age >= retirement_age
 
     years_to_ret = max(0, retirement_age - current_age)
@@ -401,45 +404,116 @@ def roth_conversion_window_optimizer(
             "note": "No SS, no RMDs — typically the lowest-bracket window.",
         })
 
-    # ── Phase 3: After SS starts (pre-RMD) ────────────────────────────────────
+    # ── Phase 3: After primary SS starts (pre-RMD) ───────────────────────────
     if ss_annual > 0:
-        ss_phase_start = max(retirement_age, int(ss_claiming_age))
+        primary_ss_phase_start = max(retirement_age, int(ss_claiming_age))
         ss_phase_end = _RMD_START - 1  # 72
-        if ss_phase_start <= ss_phase_end:
-            ss_years = ss_phase_end - ss_phase_start + 1
-            # Spending not covered by SS comes from portfolio; plus 85% of SS is taxable
-            spending_net = max(0.0, annual_spending - ss_annual)
-            ss_taxable = spending_net + ss_annual * 0.85
-            ss_bracket = marginal_rate(ss_taxable, fs)
-            ss_headroom = bracket_headroom(ss_taxable, fs, target_rate=ss_bracket)
-            if ss_headroom == float("inf"):
-                ss_headroom = 0.0
-            ss_conv = min(ss_headroom, trad_at_ret / ss_years) if ss_years > 0 else 0.0
-            ss_conv = max(0.0, ss_conv)
-            phases.append({
-                "name": f"After SS Starts (age {int(ss_claiming_age)})",
-                "start_age": ss_phase_start,
-                "end_age": ss_phase_end,
-                "years": ss_years,
-                "base_taxable": round(ss_taxable),
-                "bracket": ss_bracket,
-                "headroom": round(ss_headroom),
-                "recommended_annual_conversion": round(ss_conv),
-                "conversion_friendly": ss_headroom > 0 and ss_conv > 0,
-                "note": f"SS ${ss_annual:,.0f}/yr raises taxable income; bracket typically higher.",
-            })
+
+        # If spouse SS starts later than primary, split into two sub-phases.
+        _spouse_ss_mid = (
+            spouse_ss_annual > 0
+            and spouse_ss_start_age < _RMD_START
+            and int(spouse_ss_start_age) > primary_ss_phase_start
+        )
+
+        if _spouse_ss_mid:
+            # Phase 3a: primary SS only
+            phase_3a_end = min(int(spouse_ss_start_age) - 1, ss_phase_end)
+            if primary_ss_phase_start <= phase_3a_end:
+                y3a = phase_3a_end - primary_ss_phase_start + 1
+                net_3a = max(0.0, annual_spending - ss_annual)
+                tax_3a = net_3a + ss_annual * 0.85
+                brk_3a = marginal_rate(tax_3a, fs)
+                hdm_3a = bracket_headroom(tax_3a, fs, target_rate=brk_3a)
+                if hdm_3a == float("inf"):
+                    hdm_3a = 0.0
+                conv_3a = min(hdm_3a, trad_at_ret / y3a) if y3a > 0 else 0.0
+                conv_3a = max(0.0, conv_3a)
+                phases.append({
+                    "name": f"After Your SS Starts (age {int(ss_claiming_age)})",
+                    "start_age": primary_ss_phase_start,
+                    "end_age": phase_3a_end,
+                    "years": y3a,
+                    "base_taxable": round(tax_3a),
+                    "bracket": brk_3a,
+                    "headroom": round(hdm_3a),
+                    "recommended_annual_conversion": round(conv_3a),
+                    "conversion_friendly": hdm_3a > 0 and conv_3a > 0,
+                    "note": f"Your SS ${ss_annual:,.0f}/yr; spouse SS starts at age {int(spouse_ss_start_age)}.",
+                })
+            # Phase 3b: both SS combined
+            both_start = int(spouse_ss_start_age)
+            if both_start <= ss_phase_end:
+                y3b = ss_phase_end - both_start + 1
+                combined_ss = ss_annual + spouse_ss_annual
+                net_3b = max(0.0, annual_spending - combined_ss)
+                tax_3b = net_3b + combined_ss * 0.85
+                brk_3b = marginal_rate(tax_3b, fs)
+                hdm_3b = bracket_headroom(tax_3b, fs, target_rate=brk_3b)
+                if hdm_3b == float("inf"):
+                    hdm_3b = 0.0
+                conv_3b = min(hdm_3b, trad_at_ret / y3b) if y3b > 0 else 0.0
+                conv_3b = max(0.0, conv_3b)
+                phases.append({
+                    "name": f"After Both SS Start (age {int(spouse_ss_start_age)})",
+                    "start_age": both_start,
+                    "end_age": ss_phase_end,
+                    "years": y3b,
+                    "base_taxable": round(tax_3b),
+                    "bracket": brk_3b,
+                    "headroom": round(hdm_3b),
+                    "recommended_annual_conversion": round(conv_3b),
+                    "conversion_friendly": hdm_3b > 0 and conv_3b > 0,
+                    "note": f"Combined SS ${combined_ss:,.0f}/yr raises taxable income further.",
+                })
+        else:
+            # No split — primary SS + spouse SS (if already active at primary start)
+            combined_ss = ss_annual + (
+                spouse_ss_annual
+                if spouse_ss_annual > 0 and spouse_ss_start_age <= primary_ss_phase_start
+                else 0.0
+            )
+            if primary_ss_phase_start <= ss_phase_end:
+                ss_years = ss_phase_end - primary_ss_phase_start + 1
+                spending_net = max(0.0, annual_spending - combined_ss)
+                ss_taxable = spending_net + combined_ss * 0.85
+                ss_bracket = marginal_rate(ss_taxable, fs)
+                ss_headroom = bracket_headroom(ss_taxable, fs, target_rate=ss_bracket)
+                if ss_headroom == float("inf"):
+                    ss_headroom = 0.0
+                ss_conv = min(ss_headroom, trad_at_ret / ss_years) if ss_years > 0 else 0.0
+                ss_conv = max(0.0, ss_conv)
+                phases.append({
+                    "name": f"After SS Starts (age {int(ss_claiming_age)})",
+                    "start_age": primary_ss_phase_start,
+                    "end_age": ss_phase_end,
+                    "years": ss_years,
+                    "base_taxable": round(ss_taxable),
+                    "bracket": ss_bracket,
+                    "headroom": round(ss_headroom),
+                    "recommended_annual_conversion": round(ss_conv),
+                    "conversion_friendly": ss_headroom > 0 and ss_conv > 0,
+                    "note": f"SS ${combined_ss:,.0f}/yr raises taxable income; bracket typically higher.",
+                })
 
     # ── Phase 4: RMD years (73+) ──────────────────────────────────────────────
     if life_expectancy >= _RMD_START:
-        # Estimate trad balance at 73: grow to retirement, then simulate drawdown
         trad_running = trad_at_ret
         for yr in range(max(0, _RMD_START - retirement_age)):
             age_in_yr = retirement_age + yr
             ss_in_yr = ss_annual if age_in_yr >= ss_claiming_age else 0.0
-            withdrawal = max(0.0, annual_spending - ss_in_yr)
+            spouse_ss_in_yr = (
+                spouse_ss_annual
+                if spouse_ss_annual > 0 and age_in_yr >= spouse_ss_start_age
+                else 0.0
+            )
+            withdrawal = max(0.0, annual_spending - ss_in_yr - spouse_ss_in_yr)
             trad_running = max(0.0, trad_running * (1 + mu) - withdrawal)
         first_rmd = trad_running / _RMD_DIVISORS.get(73, 26.5)
-        rmd_taxable = first_rmd + ss_annual * 0.85
+        rmd_ss = ss_annual + (
+            spouse_ss_annual if spouse_ss_annual > 0 and 73 >= spouse_ss_start_age else 0.0
+        )
+        rmd_taxable = first_rmd + rmd_ss * 0.85
         rmd_bracket = marginal_rate(rmd_taxable, fs)
         phases.append({
             "name": "RMD Years (73+)",

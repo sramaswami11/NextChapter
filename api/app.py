@@ -99,6 +99,7 @@ async def chat(request: Request, message: str = Form(...)):
 
         birth_year = 2026 - state.age
         pia_monthly = state.ss_monthly_benefit or 0.0
+        le = state.life_expectancy or 84
 
         twin = HouseholdTwin(
             person=Person(age=state.age, retirement_age=state.retirement_age),
@@ -119,8 +120,34 @@ async def chat(request: Request, message: str = Form(...)):
             yield _sse("chat", "✓ Social Security claiming analysis")
             await asyncio.sleep(0.2)
 
+        # ── Spouse SS ──────────────────────────────────────────────────────────
+        spouse_ss_data = None
+        spouse_ss_claiming_age = 999.0
+        spouse_ss_monthly_at_claiming = 0.0
+        _spouse_rec = None
+        if (state.filing_status == "married"
+                and state.spouse_age is not None
+                and state.spouse_ss_benefit is not None
+                and state.spouse_ss_benefit > 0):
+            spouse_birth_year = 2026 - state.spouse_age
+            spouse_ss_data = analyze_claiming_scenarios(state.spouse_ss_benefit, spouse_birth_year)
+            _spouse_rec = recommended_strategy(spouse_ss_data, le)
+            if _spouse_rec == "claim_62":
+                spouse_ss_claiming_age = 62.0
+                spouse_ss_monthly_at_claiming = benefit_at_age(state.spouse_ss_benefit, 62.0, spouse_birth_year)
+            elif _spouse_rec == "claim_fra":
+                spouse_ss_claiming_age = float(spouse_ss_data["fra"])
+                spouse_ss_monthly_at_claiming = state.spouse_ss_benefit
+            else:
+                spouse_ss_claiming_age = 70.0
+                spouse_ss_monthly_at_claiming = benefit_at_age(state.spouse_ss_benefit, 70.0, spouse_birth_year)
+
         # ── Monte Carlo — three SS scenarios ───────────────────────────────────
-        mc_no_ss   = run_monte_carlo(twin)  # baseline: no SS income
+        mc_no_ss = run_monte_carlo(
+            twin,
+            spouse_ss_monthly=spouse_ss_monthly_at_claiming,
+            spouse_ss_start_age=spouse_ss_claiming_age,
+        )
         yield _sse("chat", "✓ Monte Carlo (10,000 simulations)")
         await asyncio.sleep(0.2)
 
@@ -130,9 +157,15 @@ async def chat(request: Request, message: str = Form(...)):
             ben_70  = benefit_at_age(pia_monthly, 70.0, birth_year)
             fra     = ss_data["fra"]
 
-            mc_62  = run_monte_carlo(twin, ss_monthly=ben_62,  ss_start_age=62.0)
-            mc_fra = run_monte_carlo(twin, ss_monthly=ben_fra, ss_start_age=fra)
-            mc_70  = run_monte_carlo(twin, ss_monthly=ben_70,  ss_start_age=70.0)
+            mc_62  = run_monte_carlo(twin, ss_monthly=ben_62,  ss_start_age=62.0,
+                                     spouse_ss_monthly=spouse_ss_monthly_at_claiming,
+                                     spouse_ss_start_age=spouse_ss_claiming_age)
+            mc_fra = run_monte_carlo(twin, ss_monthly=ben_fra, ss_start_age=fra,
+                                     spouse_ss_monthly=spouse_ss_monthly_at_claiming,
+                                     spouse_ss_start_age=spouse_ss_claiming_age)
+            mc_70  = run_monte_carlo(twin, ss_monthly=ben_70,  ss_start_age=70.0,
+                                     spouse_ss_monthly=spouse_ss_monthly_at_claiming,
+                                     spouse_ss_start_age=spouse_ss_claiming_age)
         else:
             ben_62 = ben_fra = ben_70 = 0.0
             mc_62 = mc_fra = mc_70 = mc_no_ss
@@ -152,7 +185,6 @@ async def chat(request: Request, message: str = Form(...)):
         await asyncio.sleep(0.2)
 
         # ── Roth Conversion Window Optimizer ──────────────────────────────────
-        le = state.life_expectancy or 84
         if pia_monthly > 0 and ss_data:
             _win_rec = recommended_strategy(ss_data, le)
             if _win_rec == "claim_62":
@@ -172,6 +204,8 @@ async def chat(request: Request, message: str = Form(...)):
             spouse_working=state.spouse_working or False,
             spouse_income=state.spouse_income,
             spouse_retirement_age=state.spouse_retirement_age,
+            spouse_ss_monthly=spouse_ss_monthly_at_claiming,
+            spouse_ss_start_age=spouse_ss_claiming_age,
         )
         yield _sse("chat", "✓ Roth conversion timeline")
         await asyncio.sleep(0.2)
@@ -219,7 +253,6 @@ async def chat(request: Request, message: str = Form(...)):
             tax_context = "No Roth conversion gap window (retiring at or after RMD age 73, or all savings in Roth)."
 
         if pia_monthly > 0 and ss_data:
-            le = state.life_expectancy or 84
             ss_rec = recommended_strategy(ss_data, le)
             rec_labels = {
                 "claim_62": "claim at 62",
@@ -238,6 +271,13 @@ async def chat(request: Request, message: str = Form(...)):
                 f"Success rates: claim 62={mc_62['success_rate']}%, "
                 f"FRA={mc_fra['success_rate']}%, age 70={mc_70['success_rate']}%."
             )
+            if spouse_ss_data and spouse_ss_data.get("pia_monthly", 0) > 0:
+                _srec_label = rec_labels.get(_spouse_rec, "see analysis")
+                ss_context += (
+                    f" SPOUSE SS: PIA ${state.spouse_ss_benefit:,.0f}/mo at FRA "
+                    f"{spouse_ss_data['fra_label']}. Recommended: {_srec_label} "
+                    f"(${spouse_ss_monthly_at_claiming:,.0f}/mo)."
+                )
         else:
             ss_context = "Social Security: none."
 
@@ -275,7 +315,7 @@ async def chat(request: Request, message: str = Form(...)):
         state.last_window_results = window
 
         yield _sse("chat", summary)
-        yield _sse("dashboard", _build_dashboard(results, twin, tax, ss_data, mc_62, mc_fra, mc_70, cy_roth, state.life_expectancy, elim, window))
+        yield _sse("dashboard", _build_dashboard(results, twin, tax, ss_data, mc_62, mc_fra, mc_70, cy_roth, state.life_expectancy, elim, window, spouse_ss_data, _spouse_rec))
 
     response = StreamingResponse(generate(), media_type="text/event-stream")
     response.headers["Cache-Control"] = "no-cache"
@@ -406,6 +446,8 @@ def _build_dashboard(
     life_expectancy: int | None = None,
     elim: dict | None = None,
     window: dict | None = None,
+    spouse_ss_data: dict | None = None,
+    spouse_ss_rec: str | None = None,
 ) -> str:
     rate = results["success_rate"]
     bar = int(rate)
@@ -599,7 +641,26 @@ def _build_dashboard(
   <div class="assumptions-row"><span>Claim FRA vs 70 &mdash; break even at age</span><span>{be_fra_70}</span></div>
   <div class="assumptions-row"><span>Claim 62 vs 70 &mdash; break even at age</span><span>{be_62_70}</span></div>
   <div class="assumptions-row"><span>Your estimated life expectancy</span><span>age {le}</span></div>
-</div></details>"""
+</div>"""
+
+        if spouse_ss_data and spouse_ss_data.get("pia_monthly", 0) > 0:
+            s62  = spouse_ss_data["claim_62"]
+            sfra = spouse_ss_data["claim_fra"]
+            s70  = spouse_ss_data["claim_70"]
+            s_fra_label  = spouse_ss_data["fra_label"]
+            s_be_fra_70  = spouse_ss_data["breakeven_fra_vs_70"]
+            def _s_badge(key):
+                return ' &nbsp;<span style="font-size:11px;background:#22c55e;color:#fff;padding:2px 6px;border-radius:4px">&#9733; Rec</span>' if spouse_ss_rec == key else ""
+            ss_section += f"""
+<div class="assumptions-box" style="margin-top:12px">
+  <div class="assumptions-title">Spouse&#8217;s Social Security (FRA: {s_fra_label})</div>
+  <div class="assumptions-row"><span>Claim at 62{_s_badge("claim_62")}</span><span>${s62['monthly']:,}/mo &nbsp;&bull;&nbsp; ${s62['annual']:,}/yr</span></div>
+  <div class="assumptions-row"><span>Claim at FRA ({s_fra_label}){_s_badge("claim_fra")}</span><span>${sfra['monthly']:,}/mo &nbsp;&bull;&nbsp; ${sfra['annual']:,}/yr</span></div>
+  <div class="assumptions-row"><span>Claim at 70{_s_badge("claim_70")}</span><span>${s70['monthly']:,}/mo &nbsp;&bull;&nbsp; ${s70['annual']:,}/yr</span></div>
+  <div class="assumptions-row"><span>Breakeven FRA vs 70</span><span>age {s_be_fra_70}</span></div>
+</div>"""
+
+        ss_section += "</details>"
     else:
         ss_section = '<details class="accordion"><summary class="accordion-header">Social Security</summary><div class="roth-note">Social Security: not included in this analysis.</div></details>'
 

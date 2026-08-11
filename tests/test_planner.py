@@ -226,11 +226,20 @@ class TestNextQuestionOrder:
         )
         assert "single" in s.next_question().lower() or "married" in s.next_question().lower()
 
-    def test_after_married_asks_spouse_working(self):
+    def test_after_married_asks_spouse_age(self):
         s = ConversationState(
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
             filing_status="married",
+        )
+        q = s.next_question().lower()
+        assert "spouse" in q and ("old" in q or "age" in q)
+
+    def test_after_spouse_age_asks_working(self):
+        s = ConversationState(
+            retirement_age=63, age=55, savings=800_000,
+            annual_spending=60_000, traditional_pct=0.80,
+            filing_status="married", spouse_age=60,
         )
         q = s.next_question().lower()
         assert "spouse" in q and ("working" in q or "currently" in q)
@@ -239,7 +248,7 @@ class TestNextQuestionOrder:
         s = ConversationState(
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
-            filing_status="married", spouse_working=True,
+            filing_status="married", spouse_age=60, spouse_working=True,
         )
         q = s.next_question().lower()
         assert "spouse" in q and "income" in q
@@ -248,10 +257,29 @@ class TestNextQuestionOrder:
         s = ConversationState(
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
-            filing_status="married", spouse_working=True, spouse_income=90_000,
+            filing_status="married", spouse_age=60, spouse_working=True, spouse_income=90_000,
         )
         q = s.next_question().lower()
         assert "retire" in q or "age" in q
+
+    def test_after_spouse_retire_age_asks_ss_benefit(self):
+        s = ConversationState(
+            retirement_age=63, age=55, savings=800_000,
+            annual_spending=60_000, traditional_pct=0.80,
+            filing_status="married", spouse_age=60, spouse_working=True,
+            spouse_income=90_000, spouse_retirement_age=67,
+        )
+        q = s.next_question().lower()
+        assert "spouse" in q and "social security" in q
+
+    def test_after_spouse_not_working_asks_ss_benefit(self):
+        s = ConversationState(
+            retirement_age=63, age=55, savings=800_000,
+            annual_spending=60_000, traditional_pct=0.80,
+            filing_status="married", spouse_age=60, spouse_working=False,
+        )
+        q = s.next_question().lower()
+        assert "spouse" in q and "social security" in q
 
     def test_seventh_question_is_ss_benefit(self):
         s = ConversationState(
@@ -368,32 +396,53 @@ class TestProcessMessage:
         assert state.spouse_working is None
 
     def test_married_spouse_not_working(self):
+        # spouse_age → not working → spouse SS benefit → questions complete
         state = self._run_flow([
-            "retire at 63", "55", "$800k", "$60k", "80%", "married", "no",
+            "retire at 63", "55", "$800k", "$60k", "80%", "married", "60", "no", "1500",
         ])
+        assert state.spouse_age == 60
         assert state.spouse_working is False
+        assert state.spouse_ss_benefit == pytest.approx(1_500)
         assert state.spouse_questions_answered is True
         assert state.spouse_income is None
+
+    def test_married_spouse_not_working_no_ss(self):
+        state = self._run_flow([
+            "retire at 63", "55", "$800k", "$60k", "80%", "married", "60", "no", "0",
+        ])
+        assert state.spouse_ss_benefit == pytest.approx(0.0)
+        assert state.spouse_questions_answered is True
 
     def test_married_spouse_working_full_flow(self):
         state = self._run_flow([
             "retire at 63", "55", "$800k", "$60k", "80%",
             "married",
+            "60",    # spouse age
             "yes",
             "$95k",
             "67",
+            "1800",  # spouse SS benefit
             "2200",
             "$120k",
             "87",
         ])
         assert state.filing_status == "married"
+        assert state.spouse_age == 60
         assert state.spouse_working is True
         assert state.spouse_income == pytest.approx(95_000)
         assert state.spouse_retirement_age == 67
+        assert state.spouse_ss_benefit == pytest.approx(1_800)
         assert state.spouse_questions_answered is True
         assert state.ss_monthly_benefit == pytest.approx(2_200)
         assert state.life_expectancy == 87
         assert state.is_ready()
+
+    def test_spouse_ss_annual_converted_to_monthly(self):
+        # $21,600/yr → $1,800/mo
+        state = self._run_flow([
+            "retire at 63", "55", "$800k", "$60k", "80%", "married", "60", "no", "21600",
+        ])
+        assert state.spouse_ss_benefit == pytest.approx(1_800.0)
 
     def test_all_roth_traditional_pct_zero(self):
         state = self._run_flow([
