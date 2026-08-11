@@ -16,6 +16,7 @@ class ConversationState:
     spouse_income: Optional[float] = None
     spouse_retirement_age: Optional[int] = None
     spouse_ss_benefit: Optional[float] = None  # monthly at FRA; 0 = no SS
+    spouse_life_expectancy: Optional[int] = None
     spouse_questions_answered: bool = False
     ss_monthly_benefit: Optional[float] = None  # monthly PIA at FRA; 0 = no SS
     current_taxable_income: Optional[float] = None  # gross income this year; None = skipped
@@ -76,6 +77,11 @@ class ConversationState:
                     "What is your spouse's estimated monthly Social Security benefit at their "
                     "full retirement age? (Check ssa.gov — type 0 if they have no SS benefits.)"
                 )
+            if self.spouse_ss_benefit > 0 and self.spouse_life_expectancy is None:
+                return (
+                    "What age do you expect your spouse to live to? "
+                    "(e.g. 85, 90 — or type 'average' for 84)"
+                )
         if self.ss_monthly_benefit is None:
             return (
                 "What is your estimated monthly Social Security benefit at full retirement age? "
@@ -104,7 +110,8 @@ class ConversationState:
         if self.filing_status == "married" and self.spouse_age is not None:
             ss_str = ""
             if self.spouse_ss_benefit and self.spouse_ss_benefit > 0:
-                ss_str = f", SS ${self.spouse_ss_benefit:,.0f}/mo at FRA"
+                le_str = f", life expectancy {self.spouse_life_expectancy}" if self.spouse_life_expectancy else ""
+                ss_str = f", SS ${self.spouse_ss_benefit:,.0f}/mo at FRA{le_str}"
             elif self.spouse_ss_benefit == 0.0:
                 ss_str = ", no SS benefits"
             if self.spouse_working and self.spouse_income:
@@ -350,8 +357,18 @@ def process_message(state: ConversationState, text: str) -> None:
                 num = _parse_number(text)
                 if num is not None:
                     state.spouse_ss_benefit = num / 12.0 if num > 5_000 else num
-            if state.spouse_ss_benefit is not None:
+            if state.spouse_ss_benefit is not None and state.spouse_ss_benefit == 0.0:
+                state.spouse_questions_answered = True  # no LE needed without SS
+            return
+        if state.spouse_ss_benefit > 0 and state.spouse_life_expectancy is None:
+            if any(w in t for w in ("average", "don't know", "not sure", "typical", "normal")):
+                state.spouse_life_expectancy = 84
                 state.spouse_questions_answered = True
+            else:
+                num = _parse_number(text)
+                if num is not None and 65 <= num <= 110:
+                    state.spouse_life_expectancy = int(num)
+                    state.spouse_questions_answered = True
             return
 
     if state.ss_monthly_benefit is None:

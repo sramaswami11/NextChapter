@@ -131,7 +131,8 @@ async def chat(request: Request, message: str = Form(...)):
                 and state.spouse_ss_benefit > 0):
             spouse_birth_year = 2026 - state.spouse_age
             spouse_ss_data = analyze_claiming_scenarios(state.spouse_ss_benefit, spouse_birth_year)
-            _spouse_rec = recommended_strategy(spouse_ss_data, le)
+            _spouse_le = state.spouse_life_expectancy or le
+            _spouse_rec = recommended_strategy(spouse_ss_data, _spouse_le)
             if _spouse_rec == "claim_62":
                 spouse_ss_claiming_age = 62.0
                 spouse_ss_monthly_at_claiming = benefit_at_age(state.spouse_ss_benefit, 62.0, spouse_birth_year)
@@ -273,9 +274,10 @@ async def chat(request: Request, message: str = Form(...)):
             )
             if spouse_ss_data and spouse_ss_data.get("pia_monthly", 0) > 0:
                 _srec_label = rec_labels.get(_spouse_rec, "see analysis")
+                _sle_str = f" (life expectancy {state.spouse_life_expectancy})" if state.spouse_life_expectancy else ""
                 ss_context += (
                     f" SPOUSE SS: PIA ${state.spouse_ss_benefit:,.0f}/mo at FRA "
-                    f"{spouse_ss_data['fra_label']}. Recommended: {_srec_label} "
+                    f"{spouse_ss_data['fra_label']}{_sle_str}. Recommended: {_srec_label} "
                     f"(${spouse_ss_monthly_at_claiming:,.0f}/mo)."
                 )
         else:
@@ -315,7 +317,7 @@ async def chat(request: Request, message: str = Form(...)):
         state.last_window_results = window
 
         yield _sse("chat", summary)
-        yield _sse("dashboard", _build_dashboard(results, twin, tax, ss_data, mc_62, mc_fra, mc_70, cy_roth, state.life_expectancy, elim, window, spouse_ss_data, _spouse_rec))
+        yield _sse("dashboard", _build_dashboard(results, twin, tax, ss_data, mc_62, mc_fra, mc_70, cy_roth, state.life_expectancy, elim, window, spouse_ss_data, _spouse_rec, state.spouse_life_expectancy))
 
     response = StreamingResponse(generate(), media_type="text/event-stream")
     response.headers["Cache-Control"] = "no-cache"
@@ -448,6 +450,7 @@ def _build_dashboard(
     window: dict | None = None,
     spouse_ss_data: dict | None = None,
     spouse_ss_rec: str | None = None,
+    spouse_le: int | None = None,
 ) -> str:
     rate = results["success_rate"]
     bar = int(rate)
@@ -658,6 +661,7 @@ def _build_dashboard(
   <div class="assumptions-row"><span>Claim at FRA ({s_fra_label}){_s_badge("claim_fra")}</span><span>${sfra['monthly']:,}/mo &nbsp;&bull;&nbsp; ${sfra['annual']:,}/yr</span></div>
   <div class="assumptions-row"><span>Claim at 70{_s_badge("claim_70")}</span><span>${s70['monthly']:,}/mo &nbsp;&bull;&nbsp; ${s70['annual']:,}/yr</span></div>
   <div class="assumptions-row"><span>Breakeven FRA vs 70</span><span>age {s_be_fra_70}</span></div>
+  <div class="assumptions-row"><span>Spouse&#8217;s estimated life expectancy</span><span>age {spouse_le or 84}</span></div>
 </div>"""
 
         ss_section += "</details>"

@@ -281,6 +281,27 @@ class TestNextQuestionOrder:
         q = s.next_question().lower()
         assert "spouse" in q and "social security" in q
 
+    def test_after_spouse_ss_benefit_asks_life_expectancy(self):
+        s = ConversationState(
+            retirement_age=63, age=55, savings=800_000,
+            annual_spending=60_000, traditional_pct=0.80,
+            filing_status="married", spouse_age=60, spouse_working=False,
+            spouse_ss_benefit=1_500.0,
+        )
+        q = s.next_question().lower()
+        assert "spouse" in q and ("live" in q or "age" in q or "life" in q)
+
+    def test_no_le_question_when_spouse_has_no_ss(self):
+        # When spouse SS = 0, spouse_questions_answered flips True without asking LE
+        s = ConversationState(
+            retirement_age=63, age=55, savings=800_000,
+            annual_spending=60_000, traditional_pct=0.80,
+            filing_status="married", spouse_age=60, spouse_working=False,
+            spouse_ss_benefit=0.0, spouse_questions_answered=True,
+        )
+        # Next question should be primary SS, not spouse LE
+        assert "social security" in s.next_question().lower() or "estimated" in s.next_question().lower()
+
     def test_seventh_question_is_ss_benefit(self):
         s = ConversationState(
             retirement_age=63, age=55, savings=800_000,
@@ -396,21 +417,24 @@ class TestProcessMessage:
         assert state.spouse_working is None
 
     def test_married_spouse_not_working(self):
-        # spouse_age → not working → spouse SS benefit → questions complete
+        # spouse_age → not working → spouse SS benefit → spouse LE → questions complete
         state = self._run_flow([
-            "retire at 63", "55", "$800k", "$60k", "80%", "married", "60", "no", "1500",
+            "retire at 63", "55", "$800k", "$60k", "80%", "married", "60", "no", "1500", "85",
         ])
         assert state.spouse_age == 60
         assert state.spouse_working is False
         assert state.spouse_ss_benefit == pytest.approx(1_500)
+        assert state.spouse_life_expectancy == 85
         assert state.spouse_questions_answered is True
         assert state.spouse_income is None
 
     def test_married_spouse_not_working_no_ss(self):
+        # When SS = 0, no LE question — done after SS answer
         state = self._run_flow([
             "retire at 63", "55", "$800k", "$60k", "80%", "married", "60", "no", "0",
         ])
         assert state.spouse_ss_benefit == pytest.approx(0.0)
+        assert state.spouse_life_expectancy is None
         assert state.spouse_questions_answered is True
 
     def test_married_spouse_working_full_flow(self):
@@ -422,6 +446,7 @@ class TestProcessMessage:
             "$95k",
             "67",
             "1800",  # spouse SS benefit
+            "85",    # spouse life expectancy
             "2200",
             "$120k",
             "87",
@@ -432,17 +457,27 @@ class TestProcessMessage:
         assert state.spouse_income == pytest.approx(95_000)
         assert state.spouse_retirement_age == 67
         assert state.spouse_ss_benefit == pytest.approx(1_800)
+        assert state.spouse_life_expectancy == 85
         assert state.spouse_questions_answered is True
         assert state.ss_monthly_benefit == pytest.approx(2_200)
         assert state.life_expectancy == 87
         assert state.is_ready()
 
     def test_spouse_ss_annual_converted_to_monthly(self):
-        # $21,600/yr → $1,800/mo
+        # $21,600/yr → $1,800/mo; then LE is required before questions complete
         state = self._run_flow([
-            "retire at 63", "55", "$800k", "$60k", "80%", "married", "60", "no", "21600",
+            "retire at 63", "55", "$800k", "$60k", "80%", "married", "60", "no", "21600", "83",
         ])
         assert state.spouse_ss_benefit == pytest.approx(1_800.0)
+        assert state.spouse_life_expectancy == 83
+        assert state.spouse_questions_answered is True
+
+    def test_spouse_le_average_sets_84(self):
+        state = self._run_flow([
+            "retire at 63", "55", "$800k", "$60k", "80%", "married", "60", "no", "1500", "average",
+        ])
+        assert state.spouse_life_expectancy == 84
+        assert state.spouse_questions_answered is True
 
     def test_all_roth_traditional_pct_zero(self):
         state = self._run_flow([
