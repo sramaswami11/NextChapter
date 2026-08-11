@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>NextChapter — Retirement Planner</title>
   <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 </head>
 <body>
 
@@ -59,6 +60,77 @@ const input    = document.getElementById('msg-input');
 const sendBtn  = document.getElementById('send-btn');
 const dash     = document.getElementById('dashboard-content');
 const badge    = document.getElementById('status-badge');
+
+let _mcChart = null, _ssChart = null;
+
+function destroyCharts() {
+  if (_mcChart) { _mcChart.destroy(); _mcChart = null; }
+  if (_ssChart) { _ssChart.destroy(); _ssChart = null; }
+}
+
+function initCharts(d) {
+  const GRID   = '#1c2035';
+  const TICK   = '#5a6080';
+  const fmt    = v => v >= 1e6 ? `$${(v/1e6).toFixed(1)}M` : v >= 0 ? `$${(v/1000).toFixed(0)}k` : `-$${(-v/1000).toFixed(0)}k`;
+
+  // ── Fan chart ──────────────────────────────────────────────────────────────
+  const mcCanvas = document.getElementById('mc-fan-chart');
+  if (mcCanvas && d.fan && d.fan.ages.length) {
+    if (_mcChart) _mcChart.destroy();
+    _mcChart = new Chart(mcCanvas.getContext('2d'), {
+      type: 'line',
+      data: {
+        labels: d.fan.ages,
+        datasets: [
+          { label: 'Best 10%',  data: d.fan.p90, borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.18)',  fill: '+1', tension: 0.35, pointRadius: 0, borderWidth: 1.5 },
+          { label: 'Median',    data: d.fan.p50, borderColor: '#60a5fa', backgroundColor: 'rgba(239,68,68,0.12)',  fill: '+1', tension: 0.35, pointRadius: 0, borderWidth: 2   },
+          { label: 'Worst 10%', data: d.fan.p10, borderColor: '#ef4444', backgroundColor: 'transparent',           fill: false, tension: 0.35, pointRadius: 0, borderWidth: 1.5 },
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { labels: { color: '#c8cdd8', boxWidth: 12, font: { size: 11 } } },
+          tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmt(c.parsed.y)}` } }
+        },
+        scales: {
+          x: { ticks: { color: TICK, maxTicksLimit: 8 }, grid: { color: GRID } },
+          y: { ticks: { color: TICK, callback: fmt }, grid: { color: GRID } }
+        }
+      }
+    });
+  }
+
+  // ── SS bar chart ───────────────────────────────────────────────────────────
+  const ssCanvas = document.getElementById('ss-bar-chart');
+  if (ssCanvas && d.ss) {
+    if (_ssChart) _ssChart.destroy();
+    const colors = d.ss.labels.map((_, i) => i === d.ss.rec ? '#22c55e' : '#3b4a6b');
+    const border = d.ss.labels.map((_, i) => i === d.ss.rec ? '#22c55e' : '#4a5880');
+    _ssChart = new Chart(ssCanvas.getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: d.ss.labels,
+        datasets: [{ label: 'Monthly Benefit', data: d.ss.monthly, backgroundColor: colors, borderColor: border, borderWidth: 1, borderRadius: 4 }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: {
+            label: c => `$${c.parsed.y.toLocaleString()}/mo`,
+            afterLabel: c => `Portfolio success: ${d.ss.success[c.dataIndex]}%${c.dataIndex === d.ss.rec ? '  ★ Recommended' : ''}`
+          }}
+        },
+        scales: {
+          x: { ticks: { color: TICK }, grid: { display: false } },
+          y: { ticks: { color: TICK, callback: v => `$${v.toLocaleString()}` }, grid: { color: GRID } }
+        }
+      }
+    });
+  }
+}
 
 function addMsg(html, role) {
   const div = document.createElement('div');
@@ -115,15 +187,18 @@ async function sendMessage(e) {
         if (eventType === 'chat')      addMsg(data, 'agent');
         if (eventType === 'status')    setStatus('Running analysis…', 'running');
         if (eventType === 'dashboard') {
+          destroyCharts();
           dash.classList.remove('dashboard-empty');
           dash.innerHTML = data;
-          // Trigger progress bar animation after paint
           requestAnimationFrame(() => {
             dash.querySelectorAll('.progress-fill').forEach(el => {
               el.style.width = el.style.getPropertyValue('--fill') || '0%';
             });
           });
           setStatus('', '');
+        }
+        if (eventType === 'chartdata') {
+          try { initCharts(JSON.parse(data)); } catch(e) { console.error('chart init', e); }
         }
       }
     }
@@ -139,6 +214,7 @@ async function sendMessage(e) {
 
 async function resetSession() {
   await fetch('/reset', { method: 'POST' });
+  destroyCharts();
   msgBox.innerHTML = `<div class="msg agent"><span>Session reset. Ask me something like <em>"Can I retire at 63?"</em></span></div>`;
   dash.className = 'dashboard-empty';
   dash.innerHTML = `<div class="empty-state"><div class="empty-icon">📊</div><div class="empty-title">No analysis yet</div><div class="empty-sub">Start a conversation to see your retirement picture here.</div></div>`;

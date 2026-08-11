@@ -1,4 +1,5 @@
 import asyncio
+import json
 import uuid
 from pathlib import Path
 
@@ -318,6 +319,26 @@ async def chat(request: Request, message: str = Form(...)):
 
         yield _sse("chat", summary)
         yield _sse("dashboard", _build_dashboard(results, twin, tax, ss_data, mc_62, mc_fra, mc_70, cy_roth, state.life_expectancy, elim, window, spouse_ss_data, _spouse_rec, state.spouse_life_expectancy))
+
+        # ── Chart data (separate event so JS can init Chart.js after canvas is in DOM)
+        chart_payload: dict = {
+            "fan": {
+                "ages": results["ages"],
+                "p10":  results["p10_by_year"],
+                "p50":  results["p50_by_year"],
+                "p90":  results["p90_by_year"],
+            },
+            "ss": None,
+        }
+        if pia_monthly > 0 and ss_data:
+            rec_idx = ["claim_62", "claim_fra", "claim_70"].index(ss_rec)
+            chart_payload["ss"] = {
+                "labels":  ["Claim at 62", f"FRA ({ss_data['fra_label']})", "Claim at 70"],
+                "monthly": [ss_data["claim_62"]["monthly"], ss_data["claim_fra"]["monthly"], ss_data["claim_70"]["monthly"]],
+                "success": [mc_62["success_rate"], mc_fra["success_rate"], mc_70["success_rate"]],
+                "rec":     rec_idx,
+            }
+        yield _sse("chartdata", json.dumps(chart_payload, separators=(',', ':')))
 
     response = StreamingResponse(generate(), media_type="text/event-stream")
     response.headers["Cache-Control"] = "no-cache"
@@ -670,8 +691,18 @@ def _build_dashboard(
 
     win_section = _window_section(window) if window else ""
 
+    has_ss_chart = ss_data is not None and twin.ss.monthly_pia > 0
+    ss_canvas = '<div class="chart-box"><div class="chart-title">Social Security — Monthly Benefit by Claiming Age</div><canvas id="ss-bar-chart"></canvas></div>' if has_ss_chart else ''
+
     return f"""
 <div class="dash-header">Retirement at {twin.person.retirement_age}</div>
+<div class="chart-row{"" if has_ss_chart else " single"}">
+  <div class="chart-box">
+    <div class="chart-title">Portfolio Projection &mdash; 10,000 Simulations</div>
+    <canvas id="mc-fan-chart"></canvas>
+  </div>
+  {ss_canvas}
+</div>
 <div class="kpi-grid">
   <div class="kpi kpi-primary">
     <div class="kpi-label">Monte Carlo Success Rate</div>

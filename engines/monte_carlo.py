@@ -16,7 +16,11 @@ def run_monte_carlo(
     years_in_retirement = plan_to_age - twin.person.retirement_age
 
     if years_in_retirement <= 0:
-        return {"success_rate": 0.0, "median_portfolio": 0.0, "p10_portfolio": 0.0, "years_in_retirement": 0}
+        return {
+            "success_rate": 0.0, "median_portfolio": 0.0, "p10_portfolio": 0.0,
+            "years_in_retirement": 0, "portfolio_at_retirement": 0,
+            "ages": [], "p10_by_year": [], "p50_by_year": [], "p90_by_year": [],
+        }
 
     a = twin.assumptions
     mu = a.stock_pct * a.stock_return + (1 - a.stock_pct) * a.bond_return
@@ -32,6 +36,12 @@ def run_monte_carlo(
     ss_annual = ss_monthly * 12.0
     spouse_ss_annual = spouse_ss_monthly * 12.0
 
+    # Seed fan-chart series with the starting portfolio (before any withdrawals)
+    ages_arr  = [twin.person.retirement_age]
+    p10_arr   = [round(portfolio_at_retirement)]
+    p50_arr   = [round(portfolio_at_retirement)]
+    p90_arr   = [round(portfolio_at_retirement)]
+
     for yr in range(years_in_retirement):
         current_age = twin.person.retirement_age + yr
         real_spending = annual_spending * (1 + a.inflation) ** yr
@@ -45,6 +55,11 @@ def run_monte_carlo(
 
         portfolios = portfolios * (1 + annual_returns[:, yr]) - net_withdrawal
 
+        ages_arr.append(current_age + 1)
+        p10_arr.append(round(float(np.percentile(portfolios, 10))))
+        p50_arr.append(round(float(np.percentile(portfolios, 50))))
+        p90_arr.append(round(float(np.percentile(portfolios, 90))))
+
     success_mask = portfolios > 0
     success_rate = float(np.mean(success_mask)) * 100
     surviving = portfolios[success_mask]
@@ -57,4 +72,8 @@ def run_monte_carlo(
         "p10_portfolio": round(p10_portfolio),
         "years_in_retirement": years_in_retirement,
         "portfolio_at_retirement": round(portfolio_at_retirement),
+        "ages": ages_arr,
+        "p10_by_year": p10_arr,
+        "p50_by_year": p50_arr,
+        "p90_by_year": p90_arr,
     }
