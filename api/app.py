@@ -169,6 +169,9 @@ async def chat(request: Request, message: str = Form(...)):
             ss_monthly_at_claiming=_win_ss_monthly,
             life_expectancy=le,
             current_taxable_income=state.current_taxable_income,
+            spouse_working=state.spouse_working or False,
+            spouse_income=state.spouse_income,
+            spouse_retirement_age=state.spouse_retirement_age,
         )
         yield _sse("chat", "✓ Roth conversion timeline")
         await asyncio.sleep(0.2)

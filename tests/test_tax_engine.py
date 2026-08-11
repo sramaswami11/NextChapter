@@ -14,6 +14,7 @@ from engines.tax_engine import (
     marginal_rate,
     optimize_roth_conversion,
     rmd_elimination_calculator,
+    roth_conversion_window_optimizer,
     tax_owed,
 )
 
@@ -287,3 +288,85 @@ class TestCurrentYearRothAdvisor:
     def test_headroom_to_next_ceiling_gte_current_headroom(self):
         result = current_year_roth_advisor(80_000, "single")
         assert result["headroom_to_next_ceiling"] >= result["headroom_current"]
+
+
+# ---------------------------------------------------------------------------
+# roth_conversion_window_optimizer — spouse phase
+# ---------------------------------------------------------------------------
+
+class TestWindowOptimizerSpousePhase:
+    def _base_twin(self, filing_status="married"):
+        return _twin(
+            age=55, retirement_age=63,
+            savings=1_200_000, traditional_pct=0.80,
+            spending=70_000, filing_status=filing_status,
+        )
+
+    def test_no_spouse_phase_when_spouse_not_working(self):
+        twin = self._base_twin()
+        result = roth_conversion_window_optimizer(
+            twin, ss_claiming_age=999, ss_monthly_at_claiming=0,
+            spouse_working=False,
+        )
+        phase_names = [p["name"] for p in result["phases"]]
+        assert "Spouse Working / You Retired" not in phase_names
+
+    def test_no_spouse_phase_when_single(self):
+        twin = self._base_twin(filing_status="single")
+        result = roth_conversion_window_optimizer(
+            twin, ss_claiming_age=999, ss_monthly_at_claiming=0,
+            spouse_working=False,
+        )
+        phase_names = [p["name"] for p in result["phases"]]
+        assert "Spouse Working / You Retired" not in phase_names
+
+    def test_spouse_phase_inserted_when_spouse_works_longer(self):
+        twin = self._base_twin()
+        result = roth_conversion_window_optimizer(
+            twin, ss_claiming_age=999, ss_monthly_at_claiming=0,
+            spouse_working=True, spouse_income=90_000, spouse_retirement_age=67,
+        )
+        phase_names = [p["name"] for p in result["phases"]]
+        assert "Spouse Working / You Retired" in phase_names
+
+    def test_spouse_phase_ages_are_correct(self):
+        twin = self._base_twin()
+        result = roth_conversion_window_optimizer(
+            twin, ss_claiming_age=999, ss_monthly_at_claiming=0,
+            spouse_working=True, spouse_income=90_000, spouse_retirement_age=67,
+        )
+        spouse_phase = next(p for p in result["phases"] if p["name"] == "Spouse Working / You Retired")
+        assert spouse_phase["start_age"] == 63  # user's retirement age
+        assert spouse_phase["end_age"] == 66    # spouse_retirement_age - 1
+
+    def test_gap_window_delayed_when_spouse_works_longer(self):
+        twin = self._base_twin()
+        result = roth_conversion_window_optimizer(
+            twin, ss_claiming_age=999, ss_monthly_at_claiming=0,
+            spouse_working=True, spouse_income=90_000, spouse_retirement_age=67,
+        )
+        gap_phase = next(
+            (p for p in result["phases"] if "Pre-RMD" in p["name"] or "Retirement" in p["name"]),
+            None,
+        )
+        if gap_phase:
+            assert gap_phase["start_age"] >= 67
+
+    def test_no_spouse_phase_when_spouse_retires_same_time(self):
+        twin = self._base_twin()
+        result = roth_conversion_window_optimizer(
+            twin, ss_claiming_age=999, ss_monthly_at_claiming=0,
+            spouse_working=True, spouse_income=90_000, spouse_retirement_age=63,
+        )
+        phase_names = [p["name"] for p in result["phases"]]
+        assert "Spouse Working / You Retired" not in phase_names
+
+    def test_recommendation_valid_with_spouse_phase(self):
+        twin = self._base_twin()
+        result = roth_conversion_window_optimizer(
+            twin, ss_claiming_age=999, ss_monthly_at_claiming=0,
+            spouse_working=True, spouse_income=90_000, spouse_retirement_age=67,
+        )
+        assert result["current_recommendation"] in (
+            "start_now", "wait_for_retirement", "wait_for_window", "window_passed", "never"
+        )

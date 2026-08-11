@@ -11,6 +11,10 @@ class ConversationState:
     annual_spending: Optional[float] = None
     traditional_pct: Optional[float] = None   # 0.0–1.0
     filing_status: Optional[str] = None       # "single" or "married"
+    spouse_working: Optional[bool] = None
+    spouse_income: Optional[float] = None
+    spouse_retirement_age: Optional[int] = None
+    spouse_questions_answered: bool = False
     ss_monthly_benefit: Optional[float] = None  # monthly PIA at FRA; 0 = no SS
     current_taxable_income: Optional[float] = None  # gross income this year; None = skipped
     current_income_answered: bool = False
@@ -25,6 +29,7 @@ class ConversationState:
     last_window_results: Optional[dict] = None
 
     def is_ready(self) -> bool:
+        _spouse_ok = self.spouse_questions_answered or self.filing_status != "married"
         return (
             self.retirement_age is not None
             and self.age is not None
@@ -32,6 +37,7 @@ class ConversationState:
             and self.annual_spending is not None
             and self.traditional_pct is not None
             and self.filing_status is not None
+            and _spouse_ok
             and self.ss_monthly_benefit is not None
             and self.current_income_answered
             and self.life_expectancy_answered
@@ -54,6 +60,13 @@ class ConversationState:
             )
         if self.filing_status is None:
             return "Are you filing taxes as single or married?"
+        if not self.spouse_questions_answered and self.filing_status == "married":
+            if self.spouse_working is None:
+                return "Is your spouse currently working? (yes or no)"
+            if self.spouse_working and self.spouse_income is None:
+                return "What is your spouse's annual income from work? (e.g. $85k)"
+            if self.spouse_working and self.spouse_retirement_age is None:
+                return "At what age does your spouse plan to retire?"
         if self.ss_monthly_benefit is None:
             return (
                 "What is your estimated monthly Social Security benefit at full retirement age? "
@@ -79,10 +92,21 @@ class ConversationState:
         ss = self.last_ss_results or {}
         fs_label = "married" if self.filing_status == "married" else "single"
 
+        if self.filing_status == "married" and self.spouse_working is not None:
+            if self.spouse_working and self.spouse_income:
+                spouse_note = (
+                    f" Spouse working (${self.spouse_income:,.0f}/yr, "
+                    f"retiring at {self.spouse_retirement_age})."
+                )
+            else:
+                spouse_note = " Spouse not currently working."
+        else:
+            spouse_note = ""
+
         profile = (
             f"Client: age {self.age}, retiring at {self.retirement_age}. "
             f"Saved ${self.savings:,.0f} ({self.traditional_pct:.0%} in traditional pre-tax accounts). "
-            f"Spending ${self.annual_spending:,.0f}/yr in retirement. Filing {fs_label}."
+            f"Spending ${self.annual_spending:,.0f}/yr in retirement. Filing {fs_label}.{spouse_note}"
         )
 
         mc_part = (
@@ -278,7 +302,30 @@ def process_message(state: ConversationState, text: str) -> None:
         fs = _parse_filing_status(text)
         if fs is not None:
             state.filing_status = fs
+            if fs == "single":
+                state.spouse_questions_answered = True
         return
+
+    if not state.spouse_questions_answered:
+        t = text.lower().strip()
+        if state.spouse_working is None:
+            if any(w in t for w in ("yes", "yeah", "yep", "working", "employed", "still work", "she work", "he work", "works")):
+                state.spouse_working = True
+            elif any(w in t for w in ("no", "nope", "not working", "retired", "not employed", "doesn't", "does not", "not currently")):
+                state.spouse_working = False
+                state.spouse_questions_answered = True
+            return
+        if state.spouse_income is None:
+            num = _parse_number(text)
+            if num is not None and num >= 1_000:
+                state.spouse_income = num
+            return
+        if state.spouse_retirement_age is None:
+            num = _parse_number(text)
+            if num is not None and 40 <= num <= 85:
+                state.spouse_retirement_age = int(num)
+                state.spouse_questions_answered = True
+            return
 
     if state.ss_monthly_benefit is None:
         t = text.lower().strip()

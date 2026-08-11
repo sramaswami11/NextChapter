@@ -289,6 +289,9 @@ def roth_conversion_window_optimizer(
     ss_monthly_at_claiming: float,
     life_expectancy: int = 90,
     current_taxable_income: float | None = None,
+    spouse_working: bool = False,
+    spouse_income: float | None = None,
+    spouse_retirement_age: int | None = None,
 ) -> dict:
     """
     Project taxable income across life stages and identify the optimal Roth conversion
@@ -329,8 +332,46 @@ def roth_conversion_window_optimizer(
             "note": "Earned income active — bracket varies with salary.",
         })
 
+    # ── Phase 1.5: Spouse still working after user retires ────────────────────
+    # Determines the true gap start — the gap window opens only when both spouses
+    # are retired, not when the primary person retires.
+    _true_gap_start = retirement_age
+    _has_spouse_phase = (
+        spouse_working
+        and spouse_income is not None
+        and spouse_retirement_age is not None
+        and spouse_retirement_age > retirement_age  # spouse retires later
+    )
+    if _has_spouse_phase:
+        s_phase_start = current_age if already_retired else retirement_age
+        s_phase_end = min(spouse_retirement_age - 1, _RMD_START - 1)
+        s_years = max(0, s_phase_end - s_phase_start + 1)
+        _true_gap_start = min(spouse_retirement_age, _RMD_START)
+        if s_years > 0:
+            s_bracket = marginal_rate(spouse_income, fs)
+            s_headroom = bracket_headroom(spouse_income, fs, target_rate=s_bracket)
+            if s_headroom == float("inf"):
+                s_headroom = 0.0
+            s_conv = min(s_headroom, trad_at_ret / s_years) if s_years > 0 else 0.0
+            s_conv = max(0.0, s_conv)
+            phases.append({
+                "name": "Spouse Working / You Retired",
+                "start_age": s_phase_start,
+                "end_age": s_phase_end,
+                "years": s_years,
+                "base_taxable": round(spouse_income),
+                "bracket": s_bracket,
+                "headroom": round(s_headroom),
+                "recommended_annual_conversion": round(s_conv),
+                "conversion_friendly": s_headroom > 0 and s_conv > 0,
+                "note": (
+                    f"Spouse's ${spouse_income:,.0f}/yr income elevates the bracket. "
+                    f"Gap window opens at age {_true_gap_start} when spouse retires."
+                ),
+            })
+
     # ── Phase 2: Gap window (retired, no SS, no RMD) ──────────────────────────
-    gap_start = retirement_age
+    gap_start = _true_gap_start
     gap_end = (
         min(int(ss_claiming_age) - 1, _RMD_START - 1) if ss_annual > 0
         else _RMD_START - 1
@@ -486,12 +527,21 @@ def roth_conversion_window_optimizer(
             f"Window closes at age {optimal['end_age']} — {years_left} year{'s' if years_left != 1 else ''} remaining."
         )
     elif not already_retired:
-        rec = "wait_for_retirement"
-        rec_note = (
-            f"Start converting at retirement (age {retirement_age}). "
-            f"Your bracket drops to {int(optimal['bracket'] * 100)}% when earned income stops. "
-            f"Convert ${optimal['recommended_annual_conversion']:,}/yr through age {optimal['end_age']}."
-        )
+        if optimal["start_age"] <= retirement_age:
+            rec = "wait_for_retirement"
+            rec_note = (
+                f"Start converting at retirement (age {retirement_age}). "
+                f"Your bracket drops to {int(optimal['bracket'] * 100)}% when earned income stops. "
+                f"Convert ${optimal['recommended_annual_conversion']:,}/yr through age {optimal['end_age']}."
+            )
+        else:
+            rec = "wait_for_window"
+            rec_note = (
+                f"Retire at {retirement_age}, then wait for your window at age {optimal['start_age']} "
+                f"({optimal['name']}). "
+                f"Convert ${optimal['recommended_annual_conversion']:,}/yr at "
+                f"{int(optimal['bracket'] * 100)}% bracket through age {optimal['end_age']}."
+            )
     elif current_age < optimal["start_age"]:
         rec = "wait_for_window"
         rec_note = (
