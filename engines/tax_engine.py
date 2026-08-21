@@ -9,6 +9,12 @@ _DATA = json.loads(
 _RMD_START = _DATA["rmd_start_age"]
 _RMD_DIVISORS: dict[int, float] = {int(k): v for k, v in _DATA["rmd_divisors"].items()}
 
+# 2026 LTCG harvesting constants
+_LTCG_ZERO_CEILING: dict[str, int] = {"single": 49_450, "married": 98_900}
+_AGED_STD_DEDUCTION: int = 1_650        # extra std deduction per person age 65+
+_NEW_65_DEDUCTION: int = 6_000          # per-person 65+ deduction (expires after 2028)
+_ACA_CLIFF: dict[str, int] = {"single": 62_600, "married": 84_600}
+
 
 def _std_deduction(filing_status: str) -> float:
     return _DATA["standard_deduction"][filing_status]
@@ -644,6 +650,207 @@ def roth_conversion_window_optimizer(
         "current_recommendation": rec,
         "current_recommendation_note": rec_note,
         "already_in_retirement": already_retired,
+    }
+
+
+def ltcg_harvest_advisor(
+    twin: HouseholdTwin,
+    unrealized_ltcg: float,
+    estate_intent: str | None,
+    ss_annual: float,
+    ss_claiming_age: float,
+    life_expectancy: int,
+    current_age: int,
+    spouse_age: int | None = None,
+    spouse_ss_annual: float = 0.0,
+    spouse_ss_start_age: float = 999.0,
+) -> dict:
+    """
+    Analyze the 0% LTCG harvesting opportunity vs. Roth conversion.
+
+    Ordinary income fills the 0% LTCG bracket from the bottom; every dollar
+    of Roth conversion displaces a dollar of capital gains that could have
+    been tax-free. This function quantifies that trade-off per life phase.
+    """
+    fs = twin.tax_profile.filing_status
+    retirement_age = twin.person.retirement_age
+    annual_spending = twin.spending.annual
+    std = _std_deduction(fs)
+    ltcg_taxable_ceiling = _LTCG_ZERO_CEILING[fs]
+
+    def _aged_deductions(primary_a: int, spouse_a: int | None) -> int:
+        d = 0
+        if primary_a >= 65:
+            d += _AGED_STD_DEDUCTION + _NEW_65_DEDUCTION
+        if spouse_a is not None and spouse_a >= 65:
+            d += _AGED_STD_DEDUCTION + _NEW_65_DEDUCTION
+        return d
+
+    def _spouse_age_at(target_age: int) -> int | None:
+        if spouse_age is None:
+            return None
+        return spouse_age + (target_age - current_age)
+
+    # Gap end = age before SS starts (or before RMD, if no SS)
+    gap_end_ss = int(ss_claiming_age) - 1 if ss_annual > 0 else _RMD_START - 1
+    gap_end = min(gap_end_ss, _RMD_START - 1)
+
+    phases = []
+
+    # ── Pre-65 sub-gap (retirement_age to 64) — ACA cliff constrains ───────────
+    pre65_start = retirement_age
+    pre65_end = min(64, gap_end)
+    if pre65_start <= pre65_end:
+        ordinary_gross = annual_spending
+        aca_cliff_val = _ACA_CLIFF[fs]
+        ltcg_room_gross = max(0.0, aca_cliff_val - ordinary_gross)
+        # Taxable room approximation under ACA: cliff is MAGI-based (close to gross)
+        ltcg_room_taxable = max(0.0, aca_cliff_val - ordinary_gross)
+        phases.append({
+            "name": f"Early Gap (ages {pre65_start}–{pre65_end})",
+            "start_age": pre65_start,
+            "end_age": pre65_end,
+            "years": pre65_end - pre65_start + 1,
+            "ordinary_income": round(ordinary_gross),
+            "ltcg_room_gross": round(ltcg_room_gross),
+            "ltcg_room_taxable": round(ltcg_room_taxable),
+            "effective_ceiling": aca_cliff_val,
+            "constraint": "ACA subsidy cliff",
+            "aca_applies": True,
+        })
+
+    # ── Main gap (65+ to SS start / RMD) — widest window ───────────────────────
+    main_start = max(65, retirement_age)
+    main_end = gap_end
+    if main_start <= main_end:
+        mid_age = (main_start + main_end) // 2
+        aged = _aged_deductions(mid_age, _spouse_age_at(mid_age))
+        gross_ceiling = ltcg_taxable_ceiling + std + aged
+        ordinary_gross = annual_spending
+        taxable_ordinary = max(0.0, ordinary_gross - std - aged)
+        ltcg_room_taxable = max(0.0, ltcg_taxable_ceiling - taxable_ordinary)
+        ltcg_room_gross = max(0.0, gross_ceiling - ordinary_gross)
+        phases.append({
+            "name": f"Prime Gap (ages {main_start}–{main_end})",
+            "start_age": main_start,
+            "end_age": main_end,
+            "years": main_end - main_start + 1,
+            "ordinary_income": round(ordinary_gross),
+            "ltcg_room_gross": round(ltcg_room_gross),
+            "ltcg_room_taxable": round(ltcg_room_taxable),
+            "effective_ceiling": round(gross_ceiling),
+            "constraint": "0% LTCG bracket",
+            "aca_applies": False,
+        })
+
+    # ── After SS starts (pre-RMD) ─────────────────────────────────────────────
+    if ss_annual > 0 and int(ss_claiming_age) <= _RMD_START - 1:
+        ss_start = int(ss_claiming_age)
+        ss_phase_end = _RMD_START - 1
+        if ss_start <= ss_phase_end:
+            combined_ss = ss_annual + (
+                spouse_ss_annual
+                if spouse_ss_annual > 0 and spouse_ss_start_age <= ss_start
+                else 0.0
+            )
+            net_spending = max(0.0, annual_spending - combined_ss)
+            ss_taxable_portion = combined_ss * 0.85
+            ordinary_gross = net_spending + combined_ss
+            taxable_ordinary_ss = max(0.0, net_spending + ss_taxable_portion - std)
+            mid_ss = (ss_start + ss_phase_end) // 2
+            aged_ss = _aged_deductions(mid_ss, _spouse_age_at(mid_ss))
+            gross_ceiling_ss = ltcg_taxable_ceiling + std + aged_ss
+            ltcg_room_taxable_ss = max(0.0, ltcg_taxable_ceiling - taxable_ordinary_ss)
+            ltcg_room_gross_ss = max(0.0, gross_ceiling_ss - ordinary_gross)
+            phases.append({
+                "name": f"After SS Starts (ages {ss_start}–{ss_phase_end})",
+                "start_age": ss_start,
+                "end_age": ss_phase_end,
+                "years": ss_phase_end - ss_start + 1,
+                "ordinary_income": round(ordinary_gross),
+                "ltcg_room_gross": round(ltcg_room_gross_ss),
+                "ltcg_room_taxable": round(ltcg_room_taxable_ss),
+                "effective_ceiling": round(gross_ceiling_ss),
+                "constraint": "0% LTCG bracket (narrower — SS income counts)",
+                "aca_applies": False,
+            })
+
+    # ── Best phase and harvest amount ─────────────────────────────────────────
+    best_phase = (
+        max(phases, key=lambda p: p["ltcg_room_taxable"]) if phases else None
+    )
+
+    if best_phase and best_phase["ltcg_room_taxable"] > 0 and unrealized_ltcg > 0:
+        annual_harvest = min(
+            best_phase["ltcg_room_taxable"],
+            unrealized_ltcg / max(1, best_phase["years"]),
+        )
+    else:
+        annual_harvest = 0.0
+
+    # ── Hidden Roth cost = ordinary rate in best phase + 15% LTCG displaced ───
+    if best_phase and best_phase["ltcg_room_taxable"] > 0:
+        gap_ordinary_rate = marginal_rate(best_phase["ordinary_income"], fs)
+        hidden_roth_cost = gap_ordinary_rate + 0.15
+    else:
+        gap_ordinary_rate = marginal_rate(annual_spending, fs)
+        hidden_roth_cost = gap_ordinary_rate
+
+    has_harvest_opportunity = (
+        unrealized_ltcg > 0
+        and best_phase is not None
+        and best_phase["ltcg_room_taxable"] > 0
+    )
+
+    # ── Recommendation ────────────────────────────────────────────────────────
+    if estate_intent == "heirs":
+        rec = "heirs_convert"
+        rec_note = (
+            "Your brokerage account gets a stepped-up basis at death — "
+            "your heirs inherit the gains tax-free. Harvesting those gains now is unnecessary. "
+            "Focus instead on converting your traditional IRA to Roth: "
+            "inherited IRAs do not get a step-up and come with a tax bill attached."
+        )
+    elif not has_harvest_opportunity:
+        rec = "no_room"
+        rec_note = (
+            "Your ordinary income fills the bracket before the 0% LTCG zone, "
+            "leaving no room for tax-free gain harvesting. Roth conversion advice stands."
+        )
+    else:
+        pct_ordinary = int(gap_ordinary_rate * 100)
+        pct_hidden = int(hidden_roth_cost * 100)
+        phase_name = best_phase["name"] if best_phase else "gap"
+        if estate_intent == "spend":
+            rec = "harvest_first"
+            rec_note = (
+                f"Prioritize LTCG harvesting over Roth conversion during your {phase_name}. "
+                f"You can realize up to ${annual_harvest:,.0f}/yr of gains tax-free. "
+                f"Roth converting in the same window costs you {pct_ordinary}% ordinary tax "
+                f"plus 15% in gains displaced from the 0% bucket — an effective {pct_hidden}% rate, "
+                f"not {pct_ordinary}%."
+            )
+        else:
+            rec = "harvest_first"
+            rec_note = (
+                f"You have room for ${annual_harvest:,.0f}/yr of tax-free gains during your {phase_name}. "
+                f"If you plan to spend this money (not leave it to heirs), "
+                f"harvest gains first — converting to Roth in the same window "
+                f"carries a hidden cost: {pct_ordinary}% ordinary + 15% LTCG displaced = {pct_hidden}% effective rate."
+            )
+
+    return {
+        "unrealized_ltcg": unrealized_ltcg,
+        "estate_intent": estate_intent,
+        "ltcg_taxable_ceiling": ltcg_taxable_ceiling,
+        "phases": phases,
+        "best_phase": best_phase,
+        "annual_harvest": round(annual_harvest),
+        "ordinary_rate_in_gap": gap_ordinary_rate,
+        "hidden_roth_cost": hidden_roth_cost,
+        "recommendation": rec,
+        "recommendation_note": rec_note,
+        "has_harvest_opportunity": has_harvest_opportunity,
     }
 
 

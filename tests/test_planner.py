@@ -148,7 +148,8 @@ class TestIsReady:
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
             filing_status="single", ss_monthly_benefit=2_000.0,
-            current_income_answered=True, life_expectancy_answered=True,
+            current_income_answered=True, ltcg_answered=True,
+            life_expectancy_answered=True,
         )
         assert s.is_ready() is True
 
@@ -158,7 +159,8 @@ class TestIsReady:
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.0,
             filing_status="single", ss_monthly_benefit=2_000.0,
-            current_income_answered=True, life_expectancy_answered=True,
+            current_income_answered=True, ltcg_answered=True,
+            life_expectancy_answered=True,
         )
         assert s.is_ready() is True
 
@@ -168,7 +170,8 @@ class TestIsReady:
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
             filing_status="single", ss_monthly_benefit=0.0,
-            current_income_answered=True, life_expectancy_answered=True,
+            current_income_answered=True, ltcg_answered=True,
+            life_expectancy_answered=True,
         )
         assert s.is_ready() is True
 
@@ -187,7 +190,8 @@ class TestIsReady:
             annual_spending=60_000, traditional_pct=0.80,
             filing_status="married", spouse_questions_answered=True,
             ss_monthly_benefit=2_000.0,
-            current_income_answered=True, life_expectancy_answered=True,
+            current_income_answered=True, ltcg_answered=True,
+            life_expectancy_answered=True,
         )
         assert s.is_ready() is True
 
@@ -349,6 +353,7 @@ class TestProcessMessage:
             "single",
             "2200",
             "$120k",
+            "no",   # no brokerage gains
             "87",
         ])
         assert state.retirement_age == 63
@@ -385,7 +390,7 @@ class TestProcessMessage:
     def test_life_expectancy_average_sets_84(self):
         state = self._run_flow([
             "retire at 63", "55", "$800k", "$60k", "80%",
-            "single", "2200", "skip", "average",
+            "single", "2200", "skip", "no", "average",
         ])
         assert state.life_expectancy == 84
         assert state.life_expectancy_answered is True
@@ -449,6 +454,7 @@ class TestProcessMessage:
             "85",    # spouse life expectancy
             "2200",
             "$120k",
+            "no",    # no brokerage gains
             "87",
         ])
         assert state.filing_status == "married"

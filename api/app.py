@@ -12,7 +12,10 @@ from core.digital_twin import (
     Accounts, Assumptions, HouseholdTwin, Person, Spending, TaxProfile, SocialSecurity
 )
 from engines.monte_carlo import run_monte_carlo
-from engines.tax_engine import optimize_roth_conversion, current_year_roth_advisor, rmd_elimination_calculator, roth_conversion_window_optimizer
+from engines.tax_engine import (
+    optimize_roth_conversion, current_year_roth_advisor, rmd_elimination_calculator,
+    roth_conversion_window_optimizer, ltcg_harvest_advisor,
+)
 from engines.ss_engine import analyze_claiming_scenarios, benefit_at_age, recommended_strategy
 from llm.client import explain
 
@@ -212,6 +215,24 @@ async def chat(request: Request, message: str = Form(...)):
         yield _sse("chat", "✓ Roth conversion timeline")
         await asyncio.sleep(0.2)
 
+        # ── LTCG Harvest Advisor ───────────────────────────────────────────────
+        ltcg = None
+        if state.unrealized_ltcg is not None and state.unrealized_ltcg > 0:
+            ltcg = ltcg_harvest_advisor(
+                twin,
+                unrealized_ltcg=state.unrealized_ltcg,
+                estate_intent=state.estate_intent,
+                ss_annual=_win_ss_monthly * 12,
+                ss_claiming_age=_win_ss_age,
+                life_expectancy=le,
+                current_age=state.age,
+                spouse_age=state.spouse_age,
+                spouse_ss_annual=spouse_ss_monthly_at_claiming * 12,
+                spouse_ss_start_age=spouse_ss_claiming_age,
+            )
+            yield _sse("chat", "✓ Capital gains harvesting analysis")
+            await asyncio.sleep(0.2)
+
         cy_roth = None
         if state.current_taxable_income is not None:
             cy_roth = current_year_roth_advisor(state.current_taxable_income, state.filing_status)
@@ -316,9 +337,10 @@ async def chat(request: Request, message: str = Form(...)):
         state.last_cy_roth_results = cy_roth
         state.last_elim_results = elim
         state.last_window_results = window
+        state.last_ltcg_results = ltcg
 
         yield _sse("chat", summary)
-        yield _sse("dashboard", _build_dashboard(results, twin, tax, ss_data, mc_62, mc_fra, mc_70, cy_roth, state.life_expectancy, elim, window, spouse_ss_data, _spouse_rec, state.spouse_life_expectancy))
+        yield _sse("dashboard", _build_dashboard(results, twin, tax, ss_data, mc_62, mc_fra, mc_70, cy_roth, state.life_expectancy, elim, window, spouse_ss_data, _spouse_rec, state.spouse_life_expectancy, ltcg))
 
         # ── Chart data (separate event so JS can init Chart.js after canvas is in DOM)
         chart_payload: dict = {
@@ -457,6 +479,114 @@ def _window_section(window: dict) -> str:
 </details>"""
 
 
+def _ltcg_section(ltcg: dict) -> str:
+    rec = ltcg.get("recommendation", "")
+    rec_note = ltcg.get("recommendation_note", "")
+    best = ltcg.get("best_phase")
+    annual_harvest = ltcg.get("annual_harvest", 0)
+    hidden_cost = ltcg.get("hidden_roth_cost", 0.0)
+    ordinary_rate = ltcg.get("ordinary_rate_in_gap", 0.0)
+    phases = ltcg.get("phases", [])
+    unrealized = ltcg.get("unrealized_ltcg", 0)
+    ltcg_ceiling = ltcg.get("ltcg_taxable_ceiling", 0)
+    has_opp = ltcg.get("has_harvest_opportunity", False)
+    estate_intent = ltcg.get("estate_intent")
+
+    _rec_colors = {
+        "harvest_first": "#22c55e",
+        "heirs_convert": "#f59e0b",
+        "no_room": "#94a3b8",
+    }
+    _rec_labels = {
+        "harvest_first": "Harvest Gains First",
+        "heirs_convert": "Skip Harvest — Convert IRA",
+        "no_room": "No Room for 0% Harvesting",
+    }
+    rec_color = _rec_colors.get(rec, "#94a3b8")
+    rec_label = _rec_labels.get(rec, "See Analysis")
+
+    intent_label = {"spend": "Spend in retirement", "heirs": "Leave to heirs"}.get(estate_intent or "", "Not specified")
+
+    if has_opp and best:
+        hidden_pct = int(hidden_cost * 100)
+        ordinary_pct = int(ordinary_rate * 100)
+        top = f"""<div class="kpi-grid">
+  <div class="kpi kpi-primary">
+    <div class="kpi-label">Recommendation</div>
+    <div class="kpi-value" style="font-size:20px;color:{rec_color}">{rec_label}</div>
+    <div class="kpi-sub">{rec_note}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Unrealized Long-Term Gains</div>
+    <div class="kpi-value">${unrealized:,.0f}</div>
+    <div class="kpi-sub">in taxable brokerage &nbsp;&bull;&nbsp; {intent_label}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Annual Tax-Free Harvest</div>
+    <div class="kpi-value" style="color:#22c55e">${annual_harvest:,.0f}</div>
+    <div class="kpi-sub">during {best['name']} &nbsp;&bull;&nbsp; {best['ltcg_room_taxable']:,} room in 0% bracket</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Hidden Cost of Roth Conversion Here</div>
+    <div class="kpi-value" style="color:#ef4444">{hidden_pct}%</div>
+    <div class="kpi-sub">{ordinary_pct}% ordinary income tax + 15% LTCG displaced from 0% bucket</div>
+  </div>
+</div>"""
+    else:
+        top = f'<div class="roth-note" style="color:{rec_color};margin-top:12px">{rec_note}</div>'
+
+    _col = "display:grid;grid-template-columns:2.2fr 0.9fr 1.1fr 1.2fr 1.4fr;gap:6px;align-items:center"
+    header = (
+        f'<div style="{_col};padding:4px 0 8px;border-bottom:1px solid #1c2035;'
+        f'font-size:11px;font-weight:600;color:#5a6080;text-transform:uppercase;letter-spacing:.5px">'
+        f'<span>Phase</span><span>Ages</span><span>Ordinary Income</span>'
+        f'<span>0% LTCG Room</span><span>Constraint</span></div>'
+    )
+
+    rows = ""
+    best_name = best["name"] if best else None
+    for p in phases:
+        name = p["name"]
+        ages = f"{p['start_age']}&ndash;{p['end_age']}"
+        inc = f"${p['ordinary_income']:,}"
+        room = f"${p['ltcg_room_taxable']:,}" if p["ltcg_room_taxable"] > 0 else "&mdash;"
+        constraint = p.get("constraint", "")
+        is_best = name == best_name and p["ltcg_room_taxable"] > 0
+        if is_best:
+            badge = f'<span style="background:#22c55e;color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">&#9733; Best window</span>'
+            room_color = "#22c55e"
+        elif p["aca_applies"]:
+            badge = f'<span style="color:#f59e0b;font-size:12px">ACA cliff applies</span>'
+            room_color = "#f59e0b"
+        else:
+            badge = f'<span style="color:#5a6080;font-size:12px">See note</span>'
+            room_color = "#5a6080"
+
+        rows += (
+            f'<div style="{_col};padding:6px 0 2px;border-bottom:1px solid #1c2035;font-size:13px;color:#c8cdd8">'
+            f'<span>{name}</span>'
+            f'<span style="color:#5a6080">{ages}</span>'
+            f'<span style="color:#5a6080">{inc}</span>'
+            f'<span style="color:{room_color};font-weight:600">{room}</span>'
+            f'<span>{badge}</span></div>'
+            f'<div style="{_col};padding:0 0 4px;border-bottom:1px solid #1c2035">'
+            f'<div style="font-size:11px;color:#5a6080;grid-column:1/-1">{constraint}</div></div>'
+        )
+
+    table = (
+        f'<div class="assumptions-box">'
+        f'<div class="assumptions-title">0% LTCG Room by Life Phase '
+        f'(2026 threshold: ${ltcg_ceiling:,} taxable income)</div>'
+        f'{header}{rows}</div>'
+    )
+
+    return f"""<details class="accordion">
+<summary class="accordion-header">Capital Gains Harvesting &mdash; The Other 0% Window</summary>
+{top}
+{table}
+</details>"""
+
+
 def _build_dashboard(
     results: dict,
     twin: HouseholdTwin,
@@ -472,6 +602,7 @@ def _build_dashboard(
     spouse_ss_data: dict | None = None,
     spouse_ss_rec: str | None = None,
     spouse_le: int | None = None,
+    ltcg: dict | None = None,
 ) -> str:
     rate = results["success_rate"]
     bar = int(rate)
@@ -690,6 +821,7 @@ def _build_dashboard(
         ss_section = '<details class="accordion"><summary class="accordion-header">Social Security</summary><div class="roth-note">Social Security: not included in this analysis.</div></details>'
 
     win_section = _window_section(window) if window else ""
+    ltcg_section = _ltcg_section(ltcg) if ltcg else ""
 
     has_ss_chart = ss_data is not None and twin.ss.monthly_pia > 0
     ss_canvas = '<div class="chart-box"><div class="chart-title">Social Security — Monthly Benefit by Claiming Age</div><canvas id="ss-bar-chart"></canvas></div>' if has_ss_chart else ''
@@ -742,6 +874,7 @@ def _build_dashboard(
 </div>
 {roth_section}
 {win_section}
+{ltcg_section}
 {cy_section}
 {ss_section}
 """

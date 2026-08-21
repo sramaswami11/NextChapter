@@ -21,6 +21,10 @@ class ConversationState:
     ss_monthly_benefit: Optional[float] = None  # monthly PIA at FRA; 0 = no SS
     current_taxable_income: Optional[float] = None  # gross income this year; None = skipped
     current_income_answered: bool = False
+    unrealized_ltcg: Optional[float] = None   # long-term gains in taxable brokerage; 0 = none
+    ltcg_answered: bool = False
+    estate_intent: Optional[str] = None       # "spend" or "heirs"
+    estate_intent_answered: bool = False
     life_expectancy: Optional[int] = None
     life_expectancy_answered: bool = False
     analysis_complete: bool = False
@@ -30,9 +34,15 @@ class ConversationState:
     last_cy_roth_results: Optional[dict] = None
     last_elim_results: Optional[dict] = None
     last_window_results: Optional[dict] = None
+    last_ltcg_results: Optional[dict] = None
 
     def is_ready(self) -> bool:
         _spouse_ok = self.spouse_questions_answered or self.filing_status != "married"
+        _estate_ok = (
+            self.estate_intent_answered
+            if (self.unrealized_ltcg is not None and self.unrealized_ltcg > 0)
+            else True
+        )
         return (
             self.retirement_age is not None
             and self.age is not None
@@ -43,6 +53,8 @@ class ConversationState:
             and _spouse_ok
             and self.ss_monthly_benefit is not None
             and self.current_income_answered
+            and self.ltcg_answered
+            and _estate_ok
             and self.life_expectancy_answered
         )
 
@@ -92,6 +104,21 @@ class ConversationState:
                 "What is your expected total taxable income this year from all sources — "
                 "wages, interest, dividends, and any other income? "
                 "(e.g. '$95k', '$200k') Type 'skip' if you'd prefer to skip this."
+            )
+        if not self.ltcg_answered:
+            return (
+                "Do you have a taxable brokerage account (outside your 401k/IRA) with "
+                "unrealized long-term capital gains? If so, roughly how much in gains? "
+                "(e.g. '$150k', '$50k' — type 'no' or 'skip' if you don't.)"
+            )
+        if (
+            self.unrealized_ltcg is not None
+            and self.unrealized_ltcg > 0
+            and not self.estate_intent_answered
+        ):
+            return (
+                "Do you plan to spend this brokerage money in retirement, "
+                "or leave it to your heirs? (type 'spend' or 'heirs' — or 'skip')"
             )
         if not self.life_expectancy_answered:
             return (
@@ -217,7 +244,25 @@ class ConversationState:
         else:
             window_part = ""
 
-        return "  ".join(filter(None, [profile, mc_part, tax_part, elim_part, window_part, ss_part, cy_part]))
+        ltcg = self.last_ltcg_results or {}
+        if ltcg and ltcg.get("has_harvest_opportunity"):
+            best = ltcg.get("best_phase", {})
+            pct_hidden = int(ltcg["hidden_roth_cost"] * 100)
+            pct_ordinary = int(ltcg["ordinary_rate_in_gap"] * 100)
+            ltcg_part = (
+                f"LTCG harvesting: ${ltcg['unrealized_ltcg']:,.0f} unrealized gains in brokerage. "
+                f"Best phase: {best.get('name','')} — "
+                f"harvest ${ltcg['annual_harvest']:,}/yr tax-free. "
+                f"Hidden Roth cost in same window: {pct_ordinary}% ordinary + 15% LTCG displaced = {pct_hidden}% effective rate. "
+                f"Estate intent: {ltcg.get('estate_intent') or 'unspecified'}. "
+                f"Recommendation: {ltcg['recommendation_note']}"
+            )
+        elif ltcg and not ltcg.get("has_harvest_opportunity"):
+            ltcg_part = f"LTCG harvesting: {ltcg.get('recommendation_note', 'no opportunity identified')}."
+        else:
+            ltcg_part = ""
+
+        return "  ".join(filter(None, [profile, mc_part, tax_part, elim_part, window_part, ltcg_part, ss_part, cy_part]))
 
 
 def _parse_percentage(text: str) -> Optional[float]:
@@ -392,6 +437,38 @@ def process_message(state: ConversationState, text: str) -> None:
             if num is not None and num >= 0:
                 state.current_taxable_income = num
                 state.current_income_answered = True
+        return
+
+    if not state.ltcg_answered:
+        t = text.lower().strip()
+        if any(w in t for w in ("no", "nope", "skip", "pass", "none", "don't have", "do not have", "zero", "0")):
+            state.unrealized_ltcg = 0.0
+            state.ltcg_answered = True
+        else:
+            num = _parse_number(text)
+            if num is not None and num >= 0:
+                state.unrealized_ltcg = num
+                state.ltcg_answered = True
+        return
+
+    if (
+        state.unrealized_ltcg is not None
+        and state.unrealized_ltcg > 0
+        and not state.estate_intent_answered
+    ):
+        t = text.lower().strip()
+        if any(w in t for w in ("spend", "use", "myself", "retire", "living", "me")):
+            state.estate_intent = "spend"
+            state.estate_intent_answered = True
+        elif any(w in t for w in ("heir", "kid", "child", "leave", "inherit", "estate", "legacy", "family")):
+            state.estate_intent = "heirs"
+            state.estate_intent_answered = True
+        elif any(w in t for w in ("both", "mix", "some", "split")):
+            state.estate_intent = "spend"  # treat mixed as spend for conservative analysis
+            state.estate_intent_answered = True
+        elif any(w in t for w in ("skip", "not sure", "don't know", "unsure")):
+            state.estate_intent = None
+            state.estate_intent_answered = True
         return
 
     if not state.life_expectancy_answered:

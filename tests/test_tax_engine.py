@@ -11,6 +11,7 @@ from core.digital_twin import (
 from engines.tax_engine import (
     bracket_headroom,
     current_year_roth_advisor,
+    ltcg_harvest_advisor,
     marginal_rate,
     optimize_roth_conversion,
     rmd_elimination_calculator,
@@ -410,3 +411,171 @@ class TestWindowOptimizerSpousePhase:
         rmd_no = next(p for p in result_no_spouse["phases"] if p["name"] == "RMD Years (73+)")
         rmd_with = next(p for p in result_with_spouse["phases"] if p["name"] == "RMD Years (73+)")
         assert rmd_with["base_taxable"] >= rmd_no["base_taxable"]
+
+
+# ---------------------------------------------------------------------------
+# ltcg_harvest_advisor
+# ---------------------------------------------------------------------------
+
+class TestLtcgHarvestAdvisor:
+    def _twin_single(self, retirement_age=65, spending=60_000):
+        return _twin(
+            age=55, retirement_age=retirement_age,
+            savings=1_000_000, traditional_pct=0.70,
+            spending=spending, filing_status="single",
+        )
+
+    def _twin_married(self, retirement_age=65, spending=80_000):
+        return _twin(
+            age=55, retirement_age=retirement_age,
+            savings=1_500_000, traditional_pct=0.70,
+            spending=spending, filing_status="married",
+        )
+
+    # -- heirs intent → always recommend IRA conversion, skip harvesting -------
+
+    def test_heirs_intent_recommends_convert(self):
+        twin = self._twin_single()
+        result = ltcg_harvest_advisor(
+            twin, unrealized_ltcg=200_000, estate_intent="heirs",
+            ss_annual=24_000, ss_claiming_age=70,
+            life_expectancy=87, current_age=55,
+        )
+        assert result["recommendation"] == "heirs_convert"
+        # has_harvest_opportunity reflects whether room exists; estate intent overrides the rec
+
+    # -- spend intent with room → harvest first -------------------------------
+
+    def test_spend_intent_with_room_recommends_harvest(self):
+        twin = self._twin_single(spending=40_000)
+        result = ltcg_harvest_advisor(
+            twin, unrealized_ltcg=150_000, estate_intent="spend",
+            ss_annual=0, ss_claiming_age=999,
+            life_expectancy=87, current_age=55,
+        )
+        assert result["recommendation"] == "harvest_first"
+        assert result["has_harvest_opportunity"] is True
+        assert result["annual_harvest"] > 0
+
+    # -- no gains → no opportunity regardless of intent -----------------------
+
+    def test_zero_unrealized_ltcg_no_opportunity(self):
+        twin = self._twin_single()
+        result = ltcg_harvest_advisor(
+            twin, unrealized_ltcg=0, estate_intent="spend",
+            ss_annual=0, ss_claiming_age=999,
+            life_expectancy=87, current_age=55,
+        )
+        assert result["has_harvest_opportunity"] is False
+        assert result["annual_harvest"] == 0
+
+    # -- high spending fills bracket → no room --------------------------------
+
+    def test_high_spending_leaves_no_room(self):
+        # $120k spending, single: taxable ordinary ≈ $105k > $49,450 LTCG ceiling
+        twin = self._twin_single(spending=120_000)
+        result = ltcg_harvest_advisor(
+            twin, unrealized_ltcg=200_000, estate_intent="spend",
+            ss_annual=0, ss_claiming_age=999,
+            life_expectancy=87, current_age=55,
+        )
+        assert result["recommendation"] == "no_room"
+        assert result["has_harvest_opportunity"] is False
+
+    # -- ACA cliff shown for pre-65 retirement --------------------------------
+
+    def test_aca_phase_present_for_early_retirement(self):
+        twin = self._twin_single(retirement_age=62)
+        result = ltcg_harvest_advisor(
+            twin, unrealized_ltcg=100_000, estate_intent="spend",
+            ss_annual=0, ss_claiming_age=999,
+            life_expectancy=87, current_age=55,
+        )
+        phase_names = [p["name"] for p in result["phases"]]
+        assert any("Early Gap" in n for n in phase_names)
+
+    def test_no_aca_phase_for_retirement_at_65(self):
+        twin = self._twin_single(retirement_age=65)
+        result = ltcg_harvest_advisor(
+            twin, unrealized_ltcg=100_000, estate_intent="spend",
+            ss_annual=0, ss_claiming_age=999,
+            life_expectancy=87, current_age=55,
+        )
+        aca_phases = [p for p in result["phases"] if p["aca_applies"]]
+        assert aca_phases == []
+
+    # -- after-SS phase appears when SS claimed before RMD --------------------
+
+    def test_after_ss_phase_present_when_ss_claimed_before_rmd(self):
+        twin = self._twin_married(retirement_age=65, spending=80_000)
+        result = ltcg_harvest_advisor(
+            twin, unrealized_ltcg=300_000, estate_intent="spend",
+            ss_annual=26_400, ss_claiming_age=70,
+            life_expectancy=88, current_age=55,
+        )
+        phase_names = [p["name"] for p in result["phases"]]
+        assert any("After SS" in n for n in phase_names)
+
+    # -- hidden Roth cost > ordinary rate when LTCG room exists ---------------
+
+    def test_hidden_roth_cost_exceeds_ordinary_rate_when_room_exists(self):
+        twin = self._twin_single(spending=40_000)
+        result = ltcg_harvest_advisor(
+            twin, unrealized_ltcg=150_000, estate_intent="spend",
+            ss_annual=0, ss_claiming_age=999,
+            life_expectancy=87, current_age=55,
+        )
+        if result["has_harvest_opportunity"]:
+            assert result["hidden_roth_cost"] > result["ordinary_rate_in_gap"]
+
+    # -- annual harvest capped at available room and gain size ----------------
+
+    def test_annual_harvest_does_not_exceed_ltcg_room(self):
+        twin = self._twin_single(spending=40_000)
+        result = ltcg_harvest_advisor(
+            twin, unrealized_ltcg=150_000, estate_intent="spend",
+            ss_annual=0, ss_claiming_age=999,
+            life_expectancy=87, current_age=55,
+        )
+        if result["best_phase"]:
+            assert result["annual_harvest"] <= result["best_phase"]["ltcg_room_taxable"]
+
+    # -- LTCG taxable ceiling matches 2026 schedule ---------------------------
+
+    def test_ltcg_ceiling_single(self):
+        twin = self._twin_single()
+        result = ltcg_harvest_advisor(
+            twin, unrealized_ltcg=100_000, estate_intent="spend",
+            ss_annual=0, ss_claiming_age=999,
+            life_expectancy=87, current_age=55,
+        )
+        assert result["ltcg_taxable_ceiling"] == 49_450
+
+    def test_ltcg_ceiling_married(self):
+        twin = self._twin_married()
+        result = ltcg_harvest_advisor(
+            twin, unrealized_ltcg=100_000, estate_intent="spend",
+            ss_annual=0, ss_claiming_age=999,
+            life_expectancy=87, current_age=55,
+        )
+        assert result["ltcg_taxable_ceiling"] == 98_900
+
+    # -- married filer has larger room than single at same spending ------------
+
+    def test_married_has_more_room_than_single(self):
+        spending = 60_000
+        twin_s = self._twin_single(retirement_age=65, spending=spending)
+        twin_m = self._twin_married(retirement_age=65, spending=spending)
+        result_s = ltcg_harvest_advisor(
+            twin_s, unrealized_ltcg=200_000, estate_intent="spend",
+            ss_annual=0, ss_claiming_age=999,
+            life_expectancy=87, current_age=55,
+        )
+        result_m = ltcg_harvest_advisor(
+            twin_m, unrealized_ltcg=200_000, estate_intent="spend",
+            ss_annual=0, ss_claiming_age=999,
+            life_expectancy=87, current_age=55,
+        )
+        room_s = result_s["best_phase"]["ltcg_room_taxable"] if result_s["best_phase"] else 0
+        room_m = result_m["best_phase"]["ltcg_room_taxable"] if result_m["best_phase"] else 0
+        assert room_m > room_s
