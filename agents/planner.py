@@ -441,7 +441,7 @@ def process_message(state: ConversationState, text: str) -> None:
 
     if not state.ltcg_answered:
         t = text.lower().strip()
-        if any(w in t for w in ("no", "nope", "skip", "pass", "none", "don't have", "do not have", "zero", "0")):
+        if any(w in t for w in ("no", "nope", "skip", "pass", "none", "don't have", "do not have", "zero")):
             state.unrealized_ltcg = 0.0
             state.ltcg_answered = True
         else:
