@@ -147,11 +147,20 @@ async def chat(request: Request, message: str = Form(...)):
                 spouse_ss_claiming_age = 70.0
                 spouse_ss_monthly_at_claiming = benefit_at_age(state.spouse_ss_benefit, 70.0, spouse_birth_year)
 
+        # Convert spouse's claiming age (spouse's own age) to primary's equivalent age.
+        # Monte Carlo and window optimizer index time by primary's age, not spouse's age.
+        # e.g. if primary is 3 years older and spouse claims at 70, primary will be 73 then.
+        _spouse_ss_start_primary = (
+            spouse_ss_claiming_age + (state.age - state.spouse_age)
+            if state.spouse_age is not None and spouse_ss_claiming_age < 900
+            else spouse_ss_claiming_age
+        )
+
         # ── Monte Carlo — three SS scenarios ───────────────────────────────────
         mc_no_ss = run_monte_carlo(
             twin,
             spouse_ss_monthly=spouse_ss_monthly_at_claiming,
-            spouse_ss_start_age=spouse_ss_claiming_age,
+            spouse_ss_start_age=_spouse_ss_start_primary,
         )
         yield _sse("chat", "✓ Monte Carlo (10,000 simulations)")
         await asyncio.sleep(0.2)
@@ -164,13 +173,13 @@ async def chat(request: Request, message: str = Form(...)):
 
             mc_62  = run_monte_carlo(twin, ss_monthly=ben_62,  ss_start_age=62.0,
                                      spouse_ss_monthly=spouse_ss_monthly_at_claiming,
-                                     spouse_ss_start_age=spouse_ss_claiming_age)
+                                     spouse_ss_start_age=_spouse_ss_start_primary)
             mc_fra = run_monte_carlo(twin, ss_monthly=ben_fra, ss_start_age=fra,
                                      spouse_ss_monthly=spouse_ss_monthly_at_claiming,
-                                     spouse_ss_start_age=spouse_ss_claiming_age)
+                                     spouse_ss_start_age=_spouse_ss_start_primary)
             mc_70  = run_monte_carlo(twin, ss_monthly=ben_70,  ss_start_age=70.0,
                                      spouse_ss_monthly=spouse_ss_monthly_at_claiming,
-                                     spouse_ss_start_age=spouse_ss_claiming_age)
+                                     spouse_ss_start_age=_spouse_ss_start_primary)
         else:
             ben_62 = ben_fra = ben_70 = 0.0
             mc_62 = mc_fra = mc_70 = mc_no_ss
@@ -210,7 +219,7 @@ async def chat(request: Request, message: str = Form(...)):
             spouse_income=state.spouse_income,
             spouse_retirement_age=state.spouse_retirement_age,
             spouse_ss_monthly=spouse_ss_monthly_at_claiming,
-            spouse_ss_start_age=spouse_ss_claiming_age,
+            spouse_ss_start_age=_spouse_ss_start_primary,
         )
         yield _sse("chat", "✓ Roth conversion timeline")
         await asyncio.sleep(0.2)
@@ -228,7 +237,7 @@ async def chat(request: Request, message: str = Form(...)):
                 current_age=state.age,
                 spouse_age=state.spouse_age,
                 spouse_ss_annual=spouse_ss_monthly_at_claiming * 12,
-                spouse_ss_start_age=spouse_ss_claiming_age,
+                spouse_ss_start_age=_spouse_ss_start_primary,
             )
             yield _sse("chat", "✓ Capital gains harvesting analysis")
             await asyncio.sleep(0.2)
