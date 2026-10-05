@@ -356,7 +356,15 @@ async def chat(request: Request, message: str = Form(...)):
         state.last_ltcg_results = ltcg
 
         yield _sse("chat", summary)
-        yield _sse("dashboard", _build_dashboard(results, twin, tax, ss_data, mc_62, mc_fra, mc_70, cy_roth, state.life_expectancy, elim, window, spouse_ss_data, _spouse_rec, state.spouse_life_expectancy, ltcg))
+        yield _sse("dashboard", _build_dashboard(
+            results, twin, tax, ss_data, mc_62, mc_fra, mc_70, cy_roth,
+            state.life_expectancy, elim, window, spouse_ss_data, _spouse_rec,
+            state.spouse_life_expectancy, ltcg,
+            ss_rec_age=_win_ss_age,
+            ss_rec_monthly=_win_ss_monthly,
+            spouse_ss_start_primary_age=_spouse_ss_start_primary,
+            spouse_ss_monthly_rec=spouse_ss_monthly_at_claiming,
+        ))
 
         # ── Chart data (separate event so JS can init Chart.js after canvas is in DOM)
         chart_payload: dict = {
@@ -603,6 +611,112 @@ def _ltcg_section(ltcg: dict) -> str:
 </details>"""
 
 
+def _monthly_income_section(
+    twin: "HouseholdTwin",
+    ss_rec_age: float,
+    ss_rec_monthly: float,
+    spouse_ss_start_primary_age: float = 999.0,
+    spouse_ss_monthly_rec: float = 0.0,
+) -> str:
+    monthly_spending = twin.spending.annual / 12
+    retirement_age = twin.person.retirement_age
+    has_primary_ss = ss_rec_monthly > 0 and ss_rec_age < 900
+    has_spouse_ss = spouse_ss_monthly_rec > 0 and spouse_ss_start_primary_age < 900
+
+    phases: list[dict] = []
+
+    if not has_primary_ss and not has_spouse_ss:
+        phases.append({
+            "label": "All Retirement",
+            "ages": f"ages {retirement_age}+",
+            "portfolio": monthly_spending,
+            "primary_ss": 0.0,
+            "spouse_ss": 0.0,
+        })
+    else:
+        first_ss_age = min(
+            ss_rec_age if has_primary_ss else 999.0,
+            spouse_ss_start_primary_age if has_spouse_ss else 999.0,
+        )
+        if int(first_ss_age) > retirement_age:
+            phases.append({
+                "label": "Before Social Security",
+                "ages": f"ages {retirement_age}–{int(first_ss_age) - 1}",
+                "portfolio": monthly_spending,
+                "primary_ss": 0.0,
+                "spouse_ss": 0.0,
+            })
+        if has_primary_ss and has_spouse_ss and int(ss_rec_age) != int(spouse_ss_start_primary_age):
+            if spouse_ss_start_primary_age < ss_rec_age:
+                # Older spouse: spouse SS starts first
+                p2 = max(0.0, monthly_spending - spouse_ss_monthly_rec)
+                phases.append({
+                    "label": "After Spouse SS",
+                    "ages": f"ages {int(spouse_ss_start_primary_age)}–{int(ss_rec_age) - 1}",
+                    "portfolio": p2,
+                    "primary_ss": 0.0,
+                    "spouse_ss": spouse_ss_monthly_rec,
+                })
+                combined = ss_rec_monthly + spouse_ss_monthly_rec
+                phases.append({
+                    "label": "After Both SS",
+                    "ages": f"ages {int(ss_rec_age)}+",
+                    "portfolio": max(0.0, monthly_spending - combined),
+                    "primary_ss": ss_rec_monthly,
+                    "spouse_ss": spouse_ss_monthly_rec,
+                })
+            else:
+                # Younger spouse: primary SS starts first
+                p2 = max(0.0, monthly_spending - ss_rec_monthly)
+                phases.append({
+                    "label": "After Your SS",
+                    "ages": f"ages {int(ss_rec_age)}–{int(spouse_ss_start_primary_age) - 1}",
+                    "portfolio": p2,
+                    "primary_ss": ss_rec_monthly,
+                    "spouse_ss": 0.0,
+                })
+                combined = ss_rec_monthly + spouse_ss_monthly_rec
+                phases.append({
+                    "label": "After Both SS",
+                    "ages": f"ages {int(spouse_ss_start_primary_age)}+",
+                    "portfolio": max(0.0, monthly_spending - combined),
+                    "primary_ss": ss_rec_monthly,
+                    "spouse_ss": spouse_ss_monthly_rec,
+                })
+        else:
+            combined = ss_rec_monthly + (spouse_ss_monthly_rec if has_spouse_ss else 0.0)
+            phases.append({
+                "label": "After SS Starts",
+                "ages": f"ages {int(ss_rec_age)}+",
+                "portfolio": max(0.0, monthly_spending - combined),
+                "primary_ss": ss_rec_monthly,
+                "spouse_ss": spouse_ss_monthly_rec if has_spouse_ss else 0.0,
+            })
+
+    def _phase_card(p: dict) -> str:
+        total = p["portfolio"] + p["primary_ss"] + p["spouse_ss"]
+        rows = []
+        if p["primary_ss"] > 0:
+            rows.append(f'<div class="income-row"><span>Your SS</span><span class="val">${p["primary_ss"]:,.0f}/mo</span></div>')
+        if p["spouse_ss"] > 0:
+            rows.append(f'<div class="income-row"><span>Spouse SS</span><span class="val">${p["spouse_ss"]:,.0f}/mo</span></div>')
+        rows.append(f'<div class="income-row"><span>Portfolio draw</span><span class="val">${p["portfolio"]:,.0f}/mo</span></div>')
+        rows_html = "\n".join(rows)
+        return f"""<div class="kpi">
+  <div class="kpi-label">{p["label"]} <span style="font-weight:400;text-transform:none;letter-spacing:0">({p["ages"]})</span></div>
+  <div class="kpi-value">${total:,.0f}<span style="font-size:16px;font-weight:500">/mo</span></div>
+  <div class="income-rows">{rows_html}</div>
+</div>"""
+
+    n = len(phases)
+    grid_class = "kpi-grid-3" if n == 3 else "kpi-grid"
+    cards = "\n".join(_phase_card(p) for p in phases)
+    return f"""<div class="assumptions-title" style="margin-bottom:12px">Monthly Income by Phase</div>
+<div class="{grid_class}" style="margin-bottom:8px">
+{cards}
+</div>"""
+
+
 def _build_dashboard(
     results: dict,
     twin: HouseholdTwin,
@@ -619,6 +733,10 @@ def _build_dashboard(
     spouse_ss_rec: str | None = None,
     spouse_le: int | None = None,
     ltcg: dict | None = None,
+    ss_rec_age: float = 999.0,
+    ss_rec_monthly: float = 0.0,
+    spouse_ss_start_primary_age: float = 999.0,
+    spouse_ss_monthly_rec: float = 0.0,
 ) -> str:
     rate = results["success_rate"]
     bar = int(rate)
@@ -839,11 +957,17 @@ def _build_dashboard(
     win_section = _window_section(window) if window else ""
     ltcg_section = _ltcg_section(ltcg) if ltcg else ""
 
+    income_section = _monthly_income_section(
+        twin, ss_rec_age, ss_rec_monthly,
+        spouse_ss_start_primary_age, spouse_ss_monthly_rec,
+    )
+
     has_ss_chart = ss_data is not None and twin.ss.monthly_pia > 0
     ss_canvas = '<div class="chart-box"><div class="chart-title">Social Security — Monthly Benefit by Claiming Age</div><canvas id="ss-bar-chart"></canvas></div>' if has_ss_chart else ''
 
     return f"""
 <div class="dash-header">Retirement at {twin.person.retirement_age}</div>
+{income_section}
 <div class="chart-row{"" if has_ss_chart else " single"}">
   <div class="chart-box">
     <div class="chart-title">Portfolio Projection &mdash; 10,000 Simulations</div>

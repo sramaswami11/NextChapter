@@ -308,6 +308,11 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .kpi.ss-fra    { border-left: 3px solid var(--accent); }
 .kpi.ss-late   { border-left: 3px solid var(--green); }
 
+/* Monthly income breakdown rows inside KPI cards */
+.income-rows { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+.income-row  { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; color: var(--text-muted); }
+.income-row .val { color: var(--text); }
+
 /* Accordion sections */
 .accordion {
   margin-top: 12px;
