@@ -147,13 +147,20 @@ async def chat(request: Request, message: str = Form(...)):
                 spouse_ss_claiming_age = 70.0
                 spouse_ss_monthly_at_claiming = benefit_at_age(state.spouse_ss_benefit, 70.0, spouse_birth_year)
 
-        # Convert spouse's claiming age (spouse's own age) to primary's equivalent age.
+        # Convert spouse ages (spouse's own age) to primary's equivalent age.
         # Monte Carlo and window optimizer index time by primary's age, not spouse's age.
         # e.g. if primary is 3 years older and spouse claims at 70, primary will be 73 then.
+        _age_offset = (state.age - state.spouse_age) if state.spouse_age is not None else 0
         _spouse_ss_start_primary = (
-            spouse_ss_claiming_age + (state.age - state.spouse_age)
+            spouse_ss_claiming_age + _age_offset
             if state.spouse_age is not None and spouse_ss_claiming_age < 900
             else spouse_ss_claiming_age
+        )
+        # spouse_retirement_age is stored in spouse's own age; convert to primary's age.
+        _spouse_ret_primary = (
+            state.spouse_retirement_age + _age_offset
+            if state.spouse_age is not None and state.spouse_retirement_age is not None
+            else state.spouse_retirement_age
         )
 
         # ── Monte Carlo — three SS scenarios ───────────────────────────────────
@@ -217,7 +224,7 @@ async def chat(request: Request, message: str = Form(...)):
             current_taxable_income=state.current_taxable_income,
             spouse_working=state.spouse_working or False,
             spouse_income=state.spouse_income,
-            spouse_retirement_age=state.spouse_retirement_age,
+            spouse_retirement_age=_spouse_ret_primary,
             spouse_ss_monthly=spouse_ss_monthly_at_claiming,
             spouse_ss_start_age=_spouse_ss_start_primary,
         )

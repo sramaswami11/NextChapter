@@ -396,6 +396,25 @@ class TestWindowOptimizerSpousePhase:
         assert not any("Both SS" in n for n in phase_names)
         assert any("After SS Starts" in n for n in phase_names)
 
+    def test_older_spouse_ss_in_gap_creates_intermediate_phase(self):
+        # Older spouse (primary 55, spouse 60): spouse claims at 70 → primary age 65.
+        # Primary claims at 70 → primary age 70.
+        # Gap window 63-69 should split: Pre-SS (63-64) + Spouse SS (65-69), then Both SS (70-72).
+        twin = self._base_twin()  # primary age 55, retires 63
+        result = roth_conversion_window_optimizer(
+            twin,
+            ss_claiming_age=70, ss_monthly_at_claiming=2_728,
+            spouse_ss_monthly=2_232, spouse_ss_start_age=65,  # primary's age when spouse SS starts
+        )
+        phase_names = [p["name"] for p in result["phases"]]
+        assert any("Spouse SS" in n for n in phase_names), "Expected 'After Spouse SS Starts' phase"
+        assert any("Both SS" in n for n in phase_names), "Expected 'After Both SS Start' phase"
+        spouse_phase = next(p for p in result["phases"] if "Spouse SS" in p["name"])
+        assert spouse_phase["start_age"] == 65
+        assert spouse_phase["end_age"] == 69
+        both_phase = next(p for p in result["phases"] if "Both SS" in p["name"])
+        assert both_phase["start_age"] == 70
+
     def test_spouse_ss_included_in_rmd_phase_income(self):
         # With spouse SS active at 73, rmd_taxable should be higher than without
         twin = self._base_twin()

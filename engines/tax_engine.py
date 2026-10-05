@@ -387,28 +387,82 @@ def roth_conversion_window_optimizer(
     )
 
     if gap_start <= gap_end and retirement_age < _RMD_START:
-        gap_years = gap_end - gap_start + 1
-        # Use annual_spending as income proxy (all from portfolio); consistent with optimize_roth_conversion
-        gap_taxable = annual_spending
-        gap_bracket = marginal_rate(gap_taxable, fs)
-        gap_headroom = bracket_headroom(gap_taxable, fs, target_rate=gap_bracket)
-        if gap_headroom == float("inf"):
-            gap_headroom = 0.0
-        gap_conv = min(gap_headroom, trad_at_ret / gap_years) if gap_years > 0 else 0.0
-        gap_conv = max(0.0, gap_conv)
-        phase_name = "Early Retirement (Pre-SS)" if ss_annual > 0 else "Retirement (Pre-RMD)"
-        phases.append({
-            "name": phase_name,
-            "start_age": gap_start,
-            "end_age": gap_end,
-            "years": gap_years,
-            "base_taxable": round(gap_taxable),
-            "bracket": gap_bracket,
-            "headroom": round(gap_headroom),
-            "recommended_annual_conversion": round(gap_conv),
-            "conversion_friendly": gap_headroom > 0 and gap_conv > 0,
-            "note": "No SS, no RMDs — typically the lowest-bracket window.",
-        })
+        pre_ss_name = "Early Retirement (Pre-SS)" if ss_annual > 0 else "Retirement (Pre-RMD)"
+
+        # Spouse SS may start during the gap (e.g. older spouse claims before primary SS).
+        _spouse_ss_in_gap = (
+            spouse_ss_annual > 0
+            and gap_start <= int(spouse_ss_start_age) <= gap_end
+        )
+
+        if _spouse_ss_in_gap:
+            spouse_gap_age = int(spouse_ss_start_age)
+            # Sub-phase 2a: pure gap before spouse SS starts
+            if gap_start < spouse_gap_age:
+                y2a = spouse_gap_age - gap_start
+                brk_2a = marginal_rate(annual_spending, fs)
+                hdm_2a = bracket_headroom(annual_spending, fs, target_rate=brk_2a)
+                if hdm_2a == float("inf"):
+                    hdm_2a = 0.0
+                conv_2a = min(hdm_2a, trad_at_ret / y2a) if y2a > 0 else 0.0
+                phases.append({
+                    "name": pre_ss_name,
+                    "start_age": gap_start,
+                    "end_age": spouse_gap_age - 1,
+                    "years": y2a,
+                    "base_taxable": round(annual_spending),
+                    "bracket": brk_2a,
+                    "headroom": round(hdm_2a),
+                    "recommended_annual_conversion": round(conv_2a),
+                    "conversion_friendly": hdm_2a > 0 and conv_2a > 0,
+                    "note": "No SS, no RMDs — typically the lowest-bracket window.",
+                })
+            # Sub-phase 2b: spouse SS active, primary SS not yet
+            y2b = gap_end - spouse_gap_age + 1
+            if y2b > 0:
+                sg_net = max(0.0, annual_spending - spouse_ss_annual)
+                sg_taxable = sg_net + spouse_ss_annual * 0.85
+                sg_brk = marginal_rate(sg_taxable, fs)
+                sg_hdm = bracket_headroom(sg_taxable, fs, target_rate=sg_brk)
+                if sg_hdm == float("inf"):
+                    sg_hdm = 0.0
+                sg_conv = min(sg_hdm, trad_at_ret / y2b) if y2b > 0 else 0.0
+                phases.append({
+                    "name": f"After Spouse SS Starts (age {spouse_gap_age})",
+                    "start_age": spouse_gap_age,
+                    "end_age": gap_end,
+                    "years": y2b,
+                    "base_taxable": round(sg_taxable),
+                    "bracket": sg_brk,
+                    "headroom": round(sg_hdm),
+                    "recommended_annual_conversion": round(sg_conv),
+                    "conversion_friendly": sg_hdm > 0 and sg_conv > 0,
+                    "note": (
+                        f"Spouse SS ${spouse_ss_annual:,.0f}/yr active; "
+                        f"your SS starts at age {int(ss_claiming_age)}."
+                    ),
+                })
+        else:
+            gap_years = gap_end - gap_start + 1
+            gap_taxable = annual_spending
+            gap_bracket = marginal_rate(gap_taxable, fs)
+            gap_headroom = bracket_headroom(gap_taxable, fs, target_rate=gap_bracket)
+            if gap_headroom == float("inf"):
+                gap_headroom = 0.0
+            gap_conv = min(gap_headroom, trad_at_ret / gap_years) if gap_years > 0 else 0.0
+            gap_conv = max(0.0, gap_conv)
+            phases.append({
+                "name": pre_ss_name,
+                "start_age": gap_start,
+                "end_age": gap_end,
+                "years": gap_years,
+                "base_taxable": round(gap_taxable),
+                "bracket": gap_bracket,
+                "headroom": round(gap_headroom),
+                "recommended_annual_conversion": round(gap_conv),
+                "conversion_friendly": gap_headroom > 0 and gap_conv > 0,
+                "note": "No SS, no RMDs — typically the lowest-bracket window.",
+            })
 
     # ── Phase 3: After primary SS starts (pre-RMD) ───────────────────────────
     if ss_annual > 0:
@@ -489,8 +543,18 @@ def roth_conversion_window_optimizer(
                     ss_headroom = 0.0
                 ss_conv = min(ss_headroom, trad_at_ret / ss_years) if ss_years > 0 else 0.0
                 ss_conv = max(0.0, ss_conv)
+                # Label as "After Both SS Start" when spouse SS was already active before primary SS.
+                _both_active = (
+                    spouse_ss_annual > 0
+                    and int(spouse_ss_start_age) < primary_ss_phase_start
+                )
+                ss_phase_label = (
+                    f"After Both SS Start (age {int(ss_claiming_age)})"
+                    if _both_active
+                    else f"After SS Starts (age {int(ss_claiming_age)})"
+                )
                 phases.append({
-                    "name": f"After SS Starts (age {int(ss_claiming_age)})",
+                    "name": ss_phase_label,
                     "start_age": primary_ss_phase_start,
                     "end_age": ss_phase_end,
                     "years": ss_years,
