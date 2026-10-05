@@ -16,6 +16,7 @@ from engines.tax_engine import (
     optimize_roth_conversion,
     rmd_elimination_calculator,
     roth_conversion_window_optimizer,
+    ss_bridge_fund,
     tax_owed,
 )
 
@@ -598,3 +599,72 @@ class TestLtcgHarvestAdvisor:
         room_s = result_s["best_phase"]["ltcg_room_taxable"] if result_s["best_phase"] else 0
         room_m = result_m["best_phase"]["ltcg_room_taxable"] if result_m["best_phase"] else 0
         assert room_m > room_s
+
+
+# ---------------------------------------------------------------------------
+# ss_bridge_fund
+# ---------------------------------------------------------------------------
+
+class TestSsBridgeFund:
+    def _twin(self, age=55, retirement_age=63, savings=1_000_000):
+        return _twin(age=age, retirement_age=retirement_age, savings=savings,
+                     traditional_pct=0.80, spending=60_000)
+
+    def test_basic_applicable(self):
+        twin = self._twin()
+        result = ss_bridge_fund(twin, ss_claiming_age=70, ss_monthly_at_claiming=2_728,
+                                portfolio_at_retirement=1_374_549)
+        assert result["applicable"] is True
+
+    def test_bridge_amount_equals_monthly_times_months(self):
+        twin = self._twin()
+        result = ss_bridge_fund(twin, ss_claiming_age=70, ss_monthly_at_claiming=2_000,
+                                portfolio_at_retirement=1_000_000)
+        # gap = 70 - 63 = 7 years = 84 months
+        assert result["gap_months"] == 84
+        assert result["bridge_amount"] == round(2_000 * 84)
+
+    def test_remaining_portfolio_is_total_minus_bridge(self):
+        twin = self._twin()
+        port = 1_374_549
+        result = ss_bridge_fund(twin, ss_claiming_age=70, ss_monthly_at_claiming=2_728,
+                                portfolio_at_retirement=port)
+        assert result["remaining_portfolio"] == port - result["bridge_amount"]
+
+    def test_total_monthly_equals_bridge_plus_portfolio_draw(self):
+        twin = self._twin()
+        result = ss_bridge_fund(twin, ss_claiming_age=70, ss_monthly_at_claiming=2_728,
+                                portfolio_at_retirement=1_374_549)
+        expected = result["monthly_bridge_draw"] + result["monthly_portfolio_draw"]
+        assert abs(result["total_monthly"] - expected) <= 1  # rounding tolerance
+
+    def test_not_applicable_when_ss_starts_at_retirement(self):
+        twin = self._twin()
+        result = ss_bridge_fund(twin, ss_claiming_age=63, ss_monthly_at_claiming=1_800,
+                                portfolio_at_retirement=1_000_000)
+        assert result["applicable"] is False
+
+    def test_not_applicable_when_no_ss(self):
+        twin = self._twin()
+        result = ss_bridge_fund(twin, ss_claiming_age=999, ss_monthly_at_claiming=0)
+        assert result["applicable"] is False
+
+    def test_not_applicable_when_bridge_exceeds_portfolio(self):
+        twin = self._twin(savings=50_000)
+        result = ss_bridge_fund(twin, ss_claiming_age=70, ss_monthly_at_claiming=5_000,
+                                portfolio_at_retirement=50_000)
+        assert result["applicable"] is False
+
+    def test_yield_adjusted_less_than_cash(self):
+        twin = self._twin()
+        result = ss_bridge_fund(twin, ss_claiming_age=70, ss_monthly_at_claiming=2_728,
+                                portfolio_at_retirement=1_374_549, yield_rate=0.045)
+        assert result["bridge_amount_yielded"] < result["bridge_amount"]
+        assert result["yield_savings"] > 0
+
+    def test_zero_yield_equals_cash(self):
+        twin = self._twin()
+        result = ss_bridge_fund(twin, ss_claiming_age=70, ss_monthly_at_claiming=2_728,
+                                portfolio_at_retirement=1_374_549, yield_rate=0.0)
+        assert result["bridge_amount_yielded"] == result["bridge_amount"]
+        assert result["yield_savings"] == 0

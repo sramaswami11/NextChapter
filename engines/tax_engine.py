@@ -964,3 +964,82 @@ def current_year_roth_advisor(current_income: float, filing_status: str) -> dict
         })
 
     return result
+
+
+def ss_bridge_fund(
+    twin: HouseholdTwin,
+    ss_claiming_age: float,
+    ss_monthly_at_claiming: float,
+    portfolio_at_retirement: float | None = None,
+    swr: float = 0.039,
+    yield_rate: float = 0.045,
+) -> dict:
+    """
+    Calculate the SS bridge fund: a cash/stable allocation set aside at
+    retirement to replace SS income during the gap before claiming starts.
+
+    The remaining portfolio stays invested and untouched during the gap,
+    eliminating sequence-of-returns risk for those years. After SS starts
+    the bridge expires and SS replaces it exactly — seamless income transition.
+
+    Two bridge sizes are returned:
+      bridge_amount         — conservative (0% yield, pure cash)
+      bridge_amount_yielded — present value of annuity at yield_rate
+                              (CD/T-bill ladder earning interest while paying out)
+    """
+    if ss_monthly_at_claiming <= 0 or ss_claiming_age >= 900:
+        return {"applicable": False, "reason": "No SS income to bridge."}
+
+    retirement_age = twin.person.retirement_age
+    gap_years = float(ss_claiming_age - retirement_age)
+    if gap_years <= 0:
+        return {"applicable": False, "reason": "SS starts at or before retirement."}
+
+    gap_months = int(round(gap_years * 12))
+    bridge_amount = ss_monthly_at_claiming * gap_months
+
+    # PV of annuity at yield_rate: how much to set aside today if the fund earns interest
+    r = yield_rate / 12  # monthly rate
+    if r > 0:
+        bridge_amount_yielded = ss_monthly_at_claiming * (1 - (1 + r) ** (-gap_months)) / r
+    else:
+        bridge_amount_yielded = bridge_amount
+    yield_savings = bridge_amount - bridge_amount_yielded
+
+    if portfolio_at_retirement is None:
+        a = twin.assumptions
+        mu = a.stock_pct * a.stock_return + (1 - a.stock_pct) * a.bond_return
+        years_to_ret = max(0, retirement_age - twin.person.age)
+        portfolio_at_retirement = twin.accounts.balance * (1 + mu) ** years_to_ret
+
+    if bridge_amount >= portfolio_at_retirement:
+        return {
+            "applicable": False,
+            "reason": "Bridge fund would exceed total portfolio.",
+            "bridge_amount": round(bridge_amount),
+            "portfolio_at_retirement": round(portfolio_at_retirement),
+        }
+
+    remaining_portfolio = portfolio_at_retirement - bridge_amount
+    monthly_portfolio_draw = remaining_portfolio * swr / 12
+    total_monthly = ss_monthly_at_claiming + monthly_portfolio_draw
+    bridge_pct = bridge_amount / portfolio_at_retirement
+
+    return {
+        "applicable": True,
+        "retirement_age": retirement_age,
+        "ss_claiming_age": ss_claiming_age,
+        "gap_years": gap_years,
+        "gap_months": gap_months,
+        "bridge_amount": round(bridge_amount),
+        "bridge_amount_yielded": round(bridge_amount_yielded),
+        "yield_savings": round(yield_savings),
+        "yield_rate": yield_rate,
+        "portfolio_at_retirement": round(portfolio_at_retirement),
+        "remaining_portfolio": round(remaining_portfolio),
+        "bridge_pct": bridge_pct,
+        "monthly_bridge_draw": round(ss_monthly_at_claiming),
+        "monthly_portfolio_draw": round(monthly_portfolio_draw),
+        "total_monthly": round(total_monthly),
+        "swr": swr,
+    }

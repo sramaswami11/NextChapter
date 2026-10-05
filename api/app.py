@@ -14,7 +14,7 @@ from core.digital_twin import (
 from engines.monte_carlo import run_monte_carlo
 from engines.tax_engine import (
     optimize_roth_conversion, current_year_roth_advisor, rmd_elimination_calculator,
-    roth_conversion_window_optimizer, ltcg_harvest_advisor,
+    roth_conversion_window_optimizer, ltcg_harvest_advisor, ss_bridge_fund,
 )
 from engines.ss_engine import analyze_claiming_scenarios, benefit_at_age, recommended_strategy
 from llm.client import explain
@@ -231,6 +231,14 @@ async def chat(request: Request, message: str = Form(...)):
         yield _sse("chat", "✓ Roth conversion timeline")
         await asyncio.sleep(0.2)
 
+        # ── SS Bridge Fund ─────────────────────────────────────────────────────
+        bridge = ss_bridge_fund(
+            twin,
+            ss_claiming_age=_win_ss_age,
+            ss_monthly_at_claiming=_win_ss_monthly,
+            portfolio_at_retirement=results["portfolio_at_retirement"],
+        )
+
         # ── LTCG Harvest Advisor ───────────────────────────────────────────────
         ltcg = None
         if state.unrealized_ltcg is not None and state.unrealized_ltcg > 0:
@@ -364,6 +372,7 @@ async def chat(request: Request, message: str = Form(...)):
             ss_rec_monthly=_win_ss_monthly,
             spouse_ss_start_primary_age=_spouse_ss_start_primary,
             spouse_ss_monthly_rec=spouse_ss_monthly_at_claiming,
+            bridge=bridge,
         ))
 
         # ── Chart data (separate event so JS can init Chart.js after canvas is in DOM)
@@ -611,6 +620,46 @@ def _ltcg_section(ltcg: dict) -> str:
 </details>"""
 
 
+def _bridge_section(bridge: dict) -> str:
+    if not bridge or not bridge.get("applicable"):
+        return ""
+    gap_yrs  = int(bridge["gap_years"])
+    gap_mo   = bridge["gap_months"]
+    ret_age  = int(bridge["retirement_age"])
+    ss_age   = int(bridge["ss_claiming_age"])
+    pct      = bridge["bridge_pct"] * 100
+    yield_pct = int(bridge["yield_rate"] * 100)
+    savings  = bridge["yield_savings"]
+
+    return f"""<details class="accordion">
+<summary class="accordion-header">SS Bridge Fund &mdash; Protect Your Portfolio</summary>
+<div class="kpi-grid-3">
+  <div class="kpi">
+    <div class="kpi-label">Bridge Fund Size (cash, 0% yield)</div>
+    <div class="kpi-value">${bridge["bridge_amount"]:,.0f}</div>
+    <div class="kpi-sub">{pct:.1f}% of portfolio &nbsp;&bull;&nbsp; {gap_yrs} yrs / {gap_mo} months</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">If Invested at {yield_pct}% (CD / T-bill ladder)</div>
+    <div class="kpi-value">${bridge["bridge_amount_yielded"]:,.0f}</div>
+    <div class="kpi-sub">saves ${savings:,.0f} vs cash &nbsp;&bull;&nbsp; same monthly payout</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Monthly Income (bridge period)</div>
+    <div class="kpi-value">${bridge["total_monthly"]:,.0f}<span style="font-size:16px;font-weight:500">/mo</span></div>
+    <div class="kpi-sub">${bridge["monthly_bridge_draw"]:,.0f} bridge + ${bridge["monthly_portfolio_draw"]:,.0f} portfolio ({int(bridge["swr"]*100*10)/10:.1f}% SWR)</div>
+  </div>
+</div>
+<div class="assumptions-box">
+  <div class="assumptions-title">How it works</div>
+  <div class="assumptions-row"><span>At retirement (age {ret_age})</span><span>Set aside ${bridge["bridge_amount_yielded"]:,.0f} in a CD/T-bill ladder earning ~{yield_pct}%</span></div>
+  <div class="assumptions-row"><span>Ages {ret_age}&ndash;{ss_age - 1} ({gap_yrs} years)</span><span>Draw ${bridge["monthly_bridge_draw"]:,.0f}/mo from ladder — never sell investments</span></div>
+  <div class="assumptions-row"><span>Age {ss_age}+</span><span>Ladder exhausted; SS pays ${bridge["monthly_bridge_draw"]:,.0f}/mo instead — seamless</span></div>
+  <div class="assumptions-row"><span>Invested portfolio ({bridge["remaining_portfolio"]:,.0f})</span><span>Stays in market untouched for {gap_yrs} years — no forced selling in down years</span></div>
+</div>
+</details>"""
+
+
 def _monthly_income_section(
     twin: "HouseholdTwin",
     ss_rec_age: float,
@@ -737,6 +786,7 @@ def _build_dashboard(
     ss_rec_monthly: float = 0.0,
     spouse_ss_start_primary_age: float = 999.0,
     spouse_ss_monthly_rec: float = 0.0,
+    bridge: dict | None = None,
 ) -> str:
     rate = results["success_rate"]
     bar = int(rate)
@@ -956,6 +1006,7 @@ def _build_dashboard(
 
     win_section = _window_section(window) if window else ""
     ltcg_section = _ltcg_section(ltcg) if ltcg else ""
+    bridge_section = _bridge_section(bridge) if bridge else ""
 
     income_section = _monthly_income_section(
         twin, ss_rec_age, ss_rec_monthly,
@@ -1017,4 +1068,5 @@ def _build_dashboard(
 {ltcg_section}
 {cy_section}
 {ss_section}
+{bridge_section}
 """
