@@ -15,6 +15,7 @@ from engines.monte_carlo import run_monte_carlo
 from engines.tax_engine import (
     optimize_roth_conversion, current_year_roth_advisor, rmd_elimination_calculator,
     roth_conversion_window_optimizer, ltcg_harvest_advisor, ss_bridge_fund,
+    aca_income_manager,
 )
 from engines.ss_engine import analyze_claiming_scenarios, benefit_at_age, recommended_strategy
 from llm.client import explain
@@ -239,6 +240,18 @@ async def chat(request: Request, message: str = Form(...)):
             portfolio_at_retirement=results["portfolio_at_retirement"],
         )
 
+        # ── ACA / Pre-Medicare Income Manager ─────────────────────────────────
+        aca = None
+        if state.retirement_age < 65:
+            aca = aca_income_manager(
+                twin,
+                ss_claiming_age=_win_ss_age,
+                ss_monthly_at_claiming=_win_ss_monthly,
+                taxable_cost_basis=state.taxable_cost_basis or 0.0,
+            )
+            yield _sse("chat", "✓ ACA pre-Medicare income analysis")
+            await asyncio.sleep(0.2)
+
         # ── LTCG Harvest Advisor ───────────────────────────────────────────────
         ltcg = None
         if state.unrealized_ltcg is not None and state.unrealized_ltcg > 0:
@@ -362,6 +375,7 @@ async def chat(request: Request, message: str = Form(...)):
         state.last_elim_results = elim
         state.last_window_results = window
         state.last_ltcg_results = ltcg
+        state.last_aca_results = aca
 
         yield _sse("chat", summary)
         yield _sse("dashboard", _build_dashboard(
@@ -373,6 +387,7 @@ async def chat(request: Request, message: str = Form(...)):
             spouse_ss_start_primary_age=_spouse_ss_start_primary,
             spouse_ss_monthly_rec=spouse_ss_monthly_at_claiming,
             bridge=bridge,
+            aca=aca,
         ))
 
         # ── Chart data (separate event so JS can init Chart.js after canvas is in DOM)
@@ -766,6 +781,90 @@ def _monthly_income_section(
 </div>"""
 
 
+def _aca_section(aca: dict) -> str:
+    if not aca or not aca.get("applicable"):
+        return ""
+
+    ret_age      = aca["retirement_age"]
+    cliff        = aca["aca_cliff"]
+    magi_worst   = aca["magi_worst"]
+    magi_free    = aca["magi_free_bucket"]
+    magi_free_yrs = aca["magi_free_years"]
+    safe_trad    = aca["safe_trad_draw"]
+    roth_needed  = aca["roth_needed_annually"]
+    taxable_basis = aca["taxable_cost_basis"]
+    risk         = aca["risk"]
+    rec_note     = aca["recommendation_note"]
+    fs_label     = aca["filing_status"].capitalize()
+
+    _risk_colors  = {"safe": "#22c55e", "manageable": "#f59e0b", "at_risk": "#ef4444"}
+    _risk_labels  = {
+        "safe":       "Subsidies Available",
+        "manageable": "Manageable with Planning",
+        "at_risk":    "At Risk — Plan Carefully",
+    }
+    risk_color = _risk_colors.get(risk, "#94a3b8")
+    risk_label = _risk_labels.get(risk, "See Analysis")
+    magi_color = "#22c55e" if magi_worst <= cliff else "#ef4444"
+
+    top = f"""<div class="kpi-grid">
+  <div class="kpi kpi-primary">
+    <div class="kpi-label">ACA Subsidy Status (ages {ret_age}&ndash;64)</div>
+    <div class="kpi-value" style="font-size:20px;color:{risk_color}">{risk_label}</div>
+    <div class="kpi-sub">{rec_note}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">ACA Cliff &mdash; 2026 MAGI Limit</div>
+    <div class="kpi-value">${cliff:,.0f}</div>
+    <div class="kpi-sub">Stay below to preserve subsidies &nbsp;&bull;&nbsp; {fs_label} filer</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">MAGI if All-Traditional Draw</div>
+    <div class="kpi-value" style="color:{magi_color}">${magi_worst:,.0f}</div>
+    <div class="kpi-sub">worst case: 100% from pre-tax IRA &nbsp;&bull;&nbsp; cliff is ${cliff:,.0f}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">MAGI-Free Bucket at Retirement</div>
+    <div class="kpi-value">${magi_free:,.0f}</div>
+    <div class="kpi-sub">Roth + taxable basis &nbsp;&bull;&nbsp; {magi_free_yrs} yrs of spending</div>
+  </div>
+</div>"""
+
+    basis_note = f"${taxable_basis:,.0f} cost basis provided" if taxable_basis > 0 else "return of principal — always MAGI-exempt"
+    ss_row = ""
+    if aca["ss_before_65"]:
+        ss_age_val = int(aca["ss_claiming_age"])
+        ss_row = (
+            f'\n  <div class="assumptions-row">'
+            f"<span>Social Security (starts at {ss_age_val})</span>"
+            f'<span style="color:#f59e0b">&#9679; 85% counts as MAGI &nbsp;&mdash;&nbsp; ${aca["ss_magi"]:,.0f}/yr added</span>'
+            f"</div>"
+        )
+    strategy_row = ""
+    if roth_needed > 0 and risk != "at_risk":
+        strategy_row = (
+            f'\n  <div class="assumptions-row">'
+            f"<span>Suggested split (stay under cliff)</span>"
+            f"<span>${safe_trad:,.0f}/yr pre-tax &nbsp;+&nbsp; ${roth_needed:,.0f}/yr Roth/basis</span>"
+            f"</div>"
+        )
+
+    table = f"""<div class="assumptions-box">
+  <div class="assumptions-title">Income Sources &mdash; MAGI Impact (ages {ret_age}&ndash;64)</div>
+  <div class="assumptions-row"><span>Traditional IRA / 401k draws</span><span style="color:#ef4444">&#9679; Fully taxable &mdash; counts toward MAGI</span></div>
+  <div class="assumptions-row"><span>Roth IRA / Roth 401k draws</span><span style="color:#22c55e">&#9679; MAGI-exempt &mdash; no MAGI impact</span></div>
+  <div class="assumptions-row"><span>Taxable brokerage &mdash; cost basis</span><span style="color:#22c55e">&#9679; MAGI-exempt &mdash; {basis_note}</span></div>
+  <div class="assumptions-row"><span>Taxable brokerage &mdash; realized gains</span><span style="color:#f59e0b">&#9679; Counts toward MAGI (0% tax if under LTCG ceiling)</span></div>
+  <div class="assumptions-row"><span>SS Bridge Fund principal draws</span><span style="color:#22c55e">&#9679; MAGI-exempt &mdash; return of principal</span></div>{ss_row}{strategy_row}
+</div>"""
+
+    return f"""<details class="accordion">
+<summary class="accordion-header">Pre-Medicare Coverage &mdash; ACA Subsidy (ages {ret_age}&ndash;64)</summary>
+{top}
+{table}
+</details>"""
+
+
 def _build_dashboard(
     results: dict,
     twin: HouseholdTwin,
@@ -787,6 +886,7 @@ def _build_dashboard(
     spouse_ss_start_primary_age: float = 999.0,
     spouse_ss_monthly_rec: float = 0.0,
     bridge: dict | None = None,
+    aca: dict | None = None,
 ) -> str:
     rate = results["success_rate"]
     bar = int(rate)
@@ -1007,6 +1107,7 @@ def _build_dashboard(
     win_section = _window_section(window) if window else ""
     ltcg_section = _ltcg_section(ltcg) if ltcg else ""
     bridge_section = _bridge_section(bridge) if bridge else ""
+    aca_section = _aca_section(aca) if aca else ""
 
     income_section = _monthly_income_section(
         twin, ss_rec_age, ss_rec_monthly,
@@ -1069,4 +1170,5 @@ def _build_dashboard(
 {cy_section}
 {ss_section}
 {bridge_section}
+{aca_section}
 """

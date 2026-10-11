@@ -966,6 +966,109 @@ def current_year_roth_advisor(current_income: float, filing_status: str) -> dict
     return result
 
 
+def aca_income_manager(
+    twin: HouseholdTwin,
+    ss_claiming_age: float,
+    ss_monthly_at_claiming: float,
+    taxable_cost_basis: float = 0.0,
+) -> dict:
+    """
+    ACA pre-Medicare income management for early retirees (retirement_age < 65).
+    Shows projected MAGI against the ACA subsidy cliff and how to source income
+    to preserve eligibility during the healthcare coverage gap.
+
+    The key insight: MAGI = traditional IRA draws + 85% of SS. Roth draws and
+    return of taxable cost basis are MAGI-exempt, letting the retiree stay under
+    the cliff even if total spending exceeds it.
+    """
+    retirement_age = twin.person.retirement_age
+    if retirement_age >= 65:
+        return {"applicable": False}
+
+    fs = twin.tax_profile.filing_status
+    annual_spending = twin.spending.annual
+    aca_cliff = _ACA_CLIFF[fs]
+
+    # Years covered: retirement through end of age 64 (Medicare starts at 65)
+    pre_medicare_years = 64 - retirement_age + 1
+
+    # Project the non-traditional (Roth + taxable brokerage) balance to retirement.
+    # Roth withdrawals are always MAGI-exempt; taxable cost-basis draws are also
+    # MAGI-exempt (return of principal), so the full non-traditional bucket is a
+    # reasonable MAGI-free estimate.
+    a = twin.assumptions
+    mu = a.stock_pct * a.stock_return + (1 - a.stock_pct) * a.bond_return
+    years_to_ret = max(0, retirement_age - twin.person.age)
+    magi_free_bucket = twin.accounts.roth_balance * (1 + mu) ** years_to_ret
+    magi_free_years = (
+        round(magi_free_bucket / annual_spending, 1) if annual_spending > 0 else 99.9
+    )
+
+    # SS before 65: 85% of benefit counts toward MAGI
+    ss_before_65 = ss_claiming_age < 65 and ss_monthly_at_claiming > 0
+    ss_annual_pre65 = ss_monthly_at_claiming * 12 if ss_before_65 else 0.0
+    ss_magi = round(ss_annual_pre65 * 0.85)
+
+    # Worst-case MAGI: all spending drawn from pre-tax + SS MAGI
+    magi_worst = annual_spending + ss_magi
+
+    # Max traditional draw that keeps MAGI under the cliff
+    safe_trad_draw = max(0.0, min(aca_cliff - ss_magi, annual_spending))
+    # How much must come from Roth/basis to keep total MAGI ≤ cliff?
+    roth_needed_annually = max(0.0, annual_spending - safe_trad_draw)
+    roth_needed_total = roth_needed_annually * pre_medicare_years
+
+    # Risk classification
+    if magi_worst <= aca_cliff:
+        risk = "safe"
+    elif magi_free_bucket >= roth_needed_total:
+        risk = "manageable"
+    else:
+        risk = "at_risk"
+
+    if risk == "safe":
+        rec_note = (
+            f"Your spending of ${annual_spending:,.0f}/yr stays below the ACA cliff of "
+            f"${aca_cliff:,.0f}. Even drawing entirely from pre-tax accounts, your MAGI "
+            f"stays under the threshold — ACA subsidies should be available during ages "
+            f"{retirement_age}–64."
+        )
+    elif risk == "manageable":
+        rec_note = (
+            f"Keep pre-tax draws to ${safe_trad_draw:,.0f}/yr and cover the remaining "
+            f"${roth_needed_annually:,.0f}/yr from Roth or taxable cost basis. "
+            f"Your MAGI-free bucket (${magi_free_bucket:,.0f}) covers {magi_free_years} years "
+            f"— enough to bridge ages {retirement_age}–64."
+        )
+    else:
+        rec_note = (
+            f"Your spending of ${annual_spending:,.0f}/yr exceeds the ACA cliff of "
+            f"${aca_cliff:,.0f}. Full subsidies may not be available. Maximize Roth and "
+            f"cost-basis draws to reduce MAGI as much as possible during ages {retirement_age}–64."
+        )
+
+    return {
+        "applicable": True,
+        "retirement_age": retirement_age,
+        "pre_medicare_years": pre_medicare_years,
+        "aca_cliff": aca_cliff,
+        "filing_status": fs,
+        "annual_spending": annual_spending,
+        "magi_free_bucket": round(magi_free_bucket),
+        "magi_free_years": magi_free_years,
+        "taxable_cost_basis": round(taxable_cost_basis),
+        "ss_before_65": ss_before_65,
+        "ss_claiming_age": ss_claiming_age if ss_before_65 else None,
+        "ss_magi": ss_magi,
+        "magi_worst": round(magi_worst),
+        "safe_trad_draw": round(safe_trad_draw),
+        "roth_needed_annually": round(roth_needed_annually),
+        "roth_needed_total": round(roth_needed_total),
+        "risk": risk,
+        "recommendation_note": rec_note,
+    }
+
+
 def ss_bridge_fund(
     twin: HouseholdTwin,
     ss_claiming_age: float,

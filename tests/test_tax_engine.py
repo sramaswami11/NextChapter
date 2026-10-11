@@ -9,6 +9,7 @@ from core.digital_twin import (
     Accounts, Assumptions, HouseholdTwin, Person, Spending, TaxProfile,
 )
 from engines.tax_engine import (
+    aca_income_manager,
     bracket_headroom,
     current_year_roth_advisor,
     ltcg_harvest_advisor,
@@ -668,3 +669,123 @@ class TestSsBridgeFund:
                                 portfolio_at_retirement=1_374_549, yield_rate=0.0)
         assert result["bridge_amount_yielded"] == result["bridge_amount"]
         assert result["yield_savings"] == 0
+
+
+# ---------------------------------------------------------------------------
+# aca_income_manager
+# ---------------------------------------------------------------------------
+
+class TestAcaIncomeManager:
+    def _twin_single(self, retirement_age=62, spending=55_000, savings=1_000_000, traditional_pct=0.80):
+        return _twin(age=55, retirement_age=retirement_age, savings=savings,
+                     traditional_pct=traditional_pct, spending=spending, filing_status="single")
+
+    def _twin_married(self, retirement_age=62, spending=75_000, savings=1_500_000, traditional_pct=0.80):
+        return _twin(age=55, retirement_age=retirement_age, savings=savings,
+                     traditional_pct=traditional_pct, spending=spending, filing_status="married")
+
+    # -- not applicable at or above Medicare age ------------------------------
+
+    def test_not_applicable_when_retiring_at_65(self):
+        twin = self._twin_single(retirement_age=65)
+        result = aca_income_manager(twin, ss_claiming_age=70, ss_monthly_at_claiming=2_000)
+        assert result["applicable"] is False
+
+    def test_not_applicable_when_retiring_after_65(self):
+        twin = self._twin_single(retirement_age=67)
+        result = aca_income_manager(twin, ss_claiming_age=70, ss_monthly_at_claiming=2_000)
+        assert result["applicable"] is False
+
+    # -- pre-medicare years ---------------------------------------------------
+
+    def test_pre_medicare_years_retiring_at_62(self):
+        twin = self._twin_single(retirement_age=62)
+        result = aca_income_manager(twin, ss_claiming_age=999, ss_monthly_at_claiming=0)
+        assert result["pre_medicare_years"] == 3  # ages 62, 63, 64
+
+    def test_pre_medicare_years_retiring_at_60(self):
+        twin = self._twin_single(retirement_age=60)
+        result = aca_income_manager(twin, ss_claiming_age=999, ss_monthly_at_claiming=0)
+        assert result["pre_medicare_years"] == 5  # ages 60, 61, 62, 63, 64
+
+    # -- safe risk when spending under cliff ----------------------------------
+
+    def test_safe_when_spending_below_cliff(self):
+        # Single cliff $62,600; spending $55k < cliff → even all-traditional is safe
+        twin = self._twin_single(spending=55_000)
+        result = aca_income_manager(twin, ss_claiming_age=999, ss_monthly_at_claiming=0)
+        assert result["risk"] == "safe"
+        assert result["magi_worst"] == 55_000
+
+    # -- at_risk when spending exceeds cliff and Roth insufficient ------------
+
+    def test_at_risk_when_spending_over_cliff_and_no_roth(self):
+        # All savings in traditional (100%), so MAGI-free bucket ≈ 0
+        twin = self._twin_single(spending=80_000, traditional_pct=1.0)
+        result = aca_income_manager(twin, ss_claiming_age=999, ss_monthly_at_claiming=0)
+        assert result["risk"] == "at_risk"
+        assert result["magi_worst"] == 80_000
+
+    # -- manageable when spending over cliff but Roth covers gap --------------
+
+    def test_manageable_when_roth_covers_needed_amount(self):
+        # Spending $70k, cliff $62.6k → need $7.4k/yr from Roth
+        # 3 years (62-64) → $22.2k needed; Roth at retirement will be ample (20% of $1M growing)
+        twin = self._twin_single(spending=70_000, traditional_pct=0.80, savings=1_500_000)
+        result = aca_income_manager(twin, ss_claiming_age=999, ss_monthly_at_claiming=0)
+        assert result["risk"] in ("manageable", "safe")
+        assert result["magi_free_bucket"] > 0
+
+    # -- ACA cliff values by filing status ------------------------------------
+
+    def test_single_cliff_62600(self):
+        twin = self._twin_single()
+        result = aca_income_manager(twin, ss_claiming_age=999, ss_monthly_at_claiming=0)
+        assert result["aca_cliff"] == 62_600
+
+    def test_married_cliff_84600(self):
+        twin = self._twin_married()
+        result = aca_income_manager(twin, ss_claiming_age=999, ss_monthly_at_claiming=0)
+        assert result["aca_cliff"] == 84_600
+
+    # -- SS before 65 adds to MAGI -------------------------------------------
+
+    def test_ss_before_65_increases_magi_worst(self):
+        twin = self._twin_single(spending=55_000)
+        result_no_ss = aca_income_manager(twin, ss_claiming_age=999, ss_monthly_at_claiming=0)
+        # SS at 62: $1,600/mo = $19,200/yr → $16,320 MAGI
+        result_ss_62 = aca_income_manager(twin, ss_claiming_age=62, ss_monthly_at_claiming=1_600)
+        assert result_ss_62["ss_before_65"] is True
+        assert result_ss_62["ss_magi"] == round(1_600 * 12 * 0.85)
+        assert result_ss_62["magi_worst"] > result_no_ss["magi_worst"]
+
+    def test_ss_at_67_not_flagged_as_before_65(self):
+        twin = self._twin_single()
+        result = aca_income_manager(twin, ss_claiming_age=67, ss_monthly_at_claiming=2_200)
+        assert result["ss_before_65"] is False
+        assert result["ss_magi"] == 0
+
+    # -- safe_trad_draw never exceeds spending --------------------------------
+
+    def test_safe_trad_draw_capped_at_spending(self):
+        # Spending $50k, cliff $62.6k → safe_trad = $50k (not $62.6k)
+        twin = self._twin_single(spending=50_000)
+        result = aca_income_manager(twin, ss_claiming_age=999, ss_monthly_at_claiming=0)
+        assert result["safe_trad_draw"] == 50_000
+
+    # -- taxable cost basis passed through ------------------------------------
+
+    def test_taxable_cost_basis_stored_in_result(self):
+        twin = self._twin_single()
+        result = aca_income_manager(twin, ss_claiming_age=999, ss_monthly_at_claiming=0,
+                                    taxable_cost_basis=120_000)
+        assert result["taxable_cost_basis"] == 120_000
+
+    # -- magi_free_bucket grows with non-traditional savings ------------------
+
+    def test_more_roth_means_larger_magi_free_bucket(self):
+        twin_mostly_trad = self._twin_single(traditional_pct=0.90)
+        twin_mostly_roth = self._twin_single(traditional_pct=0.40)
+        result_trad = aca_income_manager(twin_mostly_trad, ss_claiming_age=999, ss_monthly_at_claiming=0)
+        result_roth = aca_income_manager(twin_mostly_roth, ss_claiming_age=999, ss_monthly_at_claiming=0)
+        assert result_roth["magi_free_bucket"] > result_trad["magi_free_bucket"]

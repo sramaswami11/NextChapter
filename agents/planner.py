@@ -25,6 +25,8 @@ class ConversationState:
     ltcg_answered: bool = False
     estate_intent: Optional[str] = None       # "spend" or "heirs"
     estate_intent_answered: bool = False
+    taxable_cost_basis: Optional[float] = None  # cost basis of taxable brokerage; 0 = none/skipped
+    taxable_cost_basis_answered: bool = False
     life_expectancy: Optional[int] = None
     life_expectancy_answered: bool = False
     analysis_complete: bool = False
@@ -35,12 +37,19 @@ class ConversationState:
     last_elim_results: Optional[dict] = None
     last_window_results: Optional[dict] = None
     last_ltcg_results: Optional[dict] = None
+    last_aca_results: Optional[dict] = None
 
     def is_ready(self) -> bool:
         _spouse_ok = self.spouse_questions_answered or self.filing_status != "married"
         _estate_ok = (
             self.estate_intent_answered
             if (self.unrealized_ltcg is not None and self.unrealized_ltcg > 0)
+            else True
+        )
+        # ACA question is only asked (and required) when retiring before Medicare age 65
+        _aca_ok = (
+            self.taxable_cost_basis_answered
+            if (self.retirement_age is not None and self.retirement_age < 65)
             else True
         )
         return (
@@ -55,6 +64,7 @@ class ConversationState:
             and self.current_income_answered
             and self.ltcg_answered
             and _estate_ok
+            and _aca_ok
             and self.life_expectancy_answered
         )
 
@@ -119,6 +129,18 @@ class ConversationState:
             return (
                 "Do you plan to spend this brokerage money in retirement, "
                 "or leave it to your heirs? (type 'spend' or 'heirs' — or 'skip')"
+            )
+        if (
+            self.retirement_age is not None
+            and self.retirement_age < 65
+            and not self.taxable_cost_basis_answered
+        ):
+            return (
+                "Since you're retiring before Medicare at 65, ACA health insurance will "
+                "cover the gap. Do you have a taxable brokerage account (outside your "
+                "401k/IRA)? If so, what was your original invested amount — the cost basis, "
+                "not the current value? This helps us check your ACA subsidy exposure. "
+                "(e.g. '$150k', 'none', or 'skip')"
             )
         if not self.life_expectancy_answered:
             return (
@@ -262,7 +284,19 @@ class ConversationState:
         else:
             ltcg_part = ""
 
-        return "  ".join(filter(None, [profile, mc_part, tax_part, elim_part, window_part, ltcg_part, ss_part, cy_part]))
+        aca = self.last_aca_results or {}
+        if aca and aca.get("applicable"):
+            aca_part = (
+                f"ACA pre-Medicare (ages {aca['retirement_age']}–64): "
+                f"cliff ${aca['aca_cliff']:,.0f}, "
+                f"worst-case MAGI ${aca['magi_worst']:,.0f}, "
+                f"MAGI-free bucket ${aca['magi_free_bucket']:,.0f} ({aca['magi_free_years']} yrs). "
+                f"Risk: {aca['risk']}."
+            )
+        else:
+            aca_part = ""
+
+        return "  ".join(filter(None, [profile, mc_part, tax_part, elim_part, window_part, ltcg_part, ss_part, cy_part, aca_part]))
 
 
 def _parse_percentage(text: str) -> Optional[float]:
@@ -469,6 +503,22 @@ def process_message(state: ConversationState, text: str) -> None:
         elif any(w in t for w in ("skip", "not sure", "don't know", "unsure")):
             state.estate_intent = None
             state.estate_intent_answered = True
+        return
+
+    if (
+        state.retirement_age is not None
+        and state.retirement_age < 65
+        and not state.taxable_cost_basis_answered
+    ):
+        t = text.lower().strip()
+        if any(w in t for w in ("none", "no", "skip", "don't have", "do not have", "zero", "nothing")):
+            state.taxable_cost_basis = 0.0
+            state.taxable_cost_basis_answered = True
+        else:
+            num = _parse_number(text)
+            if num is not None and num >= 0:
+                state.taxable_cost_basis = num
+                state.taxable_cost_basis_answered = True
         return
 
     if not state.life_expectancy_answered:
