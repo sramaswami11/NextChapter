@@ -1,8 +1,8 @@
 # NextChapter — Architecture & Design Document
 
-**Version:** Accordion UI + Roth Window Optimizer Complete  
-**Last updated:** 2026-08-09  
-**Status:** Monte Carlo + Tax Agent + SS Agent + Groq fallback + Longevity SS Rec + Enhancement B (Current Year Roth) + Enhancement A (RMD Elimination) + Dashboard Accordion + Roth Conversion Window Optimizer live. Deployed on Render.
+**Version:** Enhancement F (SS Bridge Fund) Complete  
+**Last updated:** 2026-10-10  
+**Status:** Monte Carlo + Tax Agent + SS Agent + Groq fallback + Longevity SS Rec + Enhancement A (RMD Elimination) + Enhancement B (Current Year Roth) + Dashboard Accordion + Roth Window Optimizer + Full Spouse Profile + Step 4 Charts + Enhancement D (LTCG Harvesting) + Enhancement E (Monthly Income by Phase) + Enhancement F (SS Bridge Fund) live. Deployed on Render.
 
 ---
 
@@ -165,7 +165,9 @@ Married Filing Jointly brackets are the same rates at approximately double the t
 | `optimize_roth_conversion(twin)` | Full Roth conversion analysis — see algorithm below |
 | `rmd_elimination_calculator(twin)` | Computes annual Roth conversion to drain traditional IRA to $0 by age 73, eliminating all forced RMDs (Enhancement A) |
 | `current_year_roth_advisor(current_income, filing_status)` | One-time analysis: current bracket, room to fill before next bracket, stretch option (Enhancement B) |
-| `roth_conversion_window_optimizer(twin, ss_claiming_age, ss_monthly_at_claiming, life_expectancy, current_taxable_income)` | Projects taxable income across 4 life stages and identifies the optimal conversion window — which phase, which ages, how much/yr, and a plain-English recommendation |
+| `roth_conversion_window_optimizer(twin, ss_claiming_age, ss_monthly_at_claiming, life_expectancy, current_taxable_income, spouse_ss_start_age, spouse_ss_monthly)` | Projects taxable income across 4 life stages (spouse SS-aware) and identifies the optimal conversion window — which phase, which ages, how much/yr, and a plain-English recommendation |
+| `ltcg_harvest_advisor(twin, unrealized_ltcg, ltcg_estate_intent, current_taxable_income)` | Finds annual 0% LTCG harvest room using 2026 thresholds; applies ACA cliff constraint for ages 62–64; computes hidden Roth cost comparison (Enhancement D) |
+| `ss_bridge_fund(gap_months, ss_monthly, portfolio_at_retirement, annual_spending, yield_rate)` | Computes cash bridge size for SS delay gap plus yield-adjusted PV-of-annuity at given rate (default 4%), showing how much less to set aside in a CD/T-bill ladder vs pure cash (Enhancement F) |
 
 **`optimize_roth_conversion()` algorithm:**
 
@@ -211,12 +213,16 @@ Married Filing Jointly brackets are the same rates at approximately double the t
 1. Build 4 life-stage phases (skipping any that don't apply):
    Phase 1 — Working Years (current_age → retirement_age−1)
               Income = current_taxable_income; bracket varies with salary.
-   Phase 2 — Early Retirement/Gap (retirement_age → min(ss_claiming_age, 72))
+   Phase 2 — Early Retirement/Gap (retirement_age → first SS start)
               Income = annual_spending (portfolio withdrawals only); typically
               the lowest bracket window.
-   Phase 3 — After SS Starts (ss_claiming_age → 72)
+              Gap splits into sub-phases when spouse SS starts mid-gap
+              (e.g. older spouse already claiming SS before primary retires).
+   Phase 3 — After SS Starts (first ss_claiming_age → 72)
               Income = spending_net_of_SS + ss_annual × 0.85 (85% SS taxable);
               bracket typically higher than gap phase.
+              If spouse SS precedes primary SS, phase label becomes
+              "After Spouse SS Starts (age X)" until primary SS begins.
    Phase 4 — RMD Years (73 → life_expectancy)
               Income = first_RMD + ss_annual × 0.85; forced distributions,
               no conversion recommended.
@@ -340,29 +346,37 @@ If delta > 0 (delayed):
 
 **Purpose:** Manages the conversation — tracks what we know, asks for what we don't, parses natural language, and provides context for follow-up questions.
 
-**`ConversationState`** has nine data-collection fields plus five state-tracking fields:
+**`ConversationState`** has up to 16 data-collection fields (6 spouse questions added for married filers) plus state-tracking fields:
 
 ```
-Data fields (collected via Q&A):
+Core data fields (all filers):
   retirement_age → age → savings → annual_spending → traditional_pct
-  → filing_status → ss_monthly_benefit → current_taxable_income (Q8)
-  → life_expectancy (Q9)
+  → filing_status → ss_monthly_benefit → current_taxable_income (skippable)
+  → unrealized_ltcg (skippable) → ltcg_estate_intent (skippable, only if gains > 0)
+  → life_expectancy
+
+Spouse fields (married filers only):
+  spouse_age → spouse_working → spouse_income (if working) → spouse_retire_age
+  → spouse_ss_monthly (0 = no SS) → spouse_life_expectancy (if SS > 0)
 
 Sentinel booleans (skippable fields):
-  current_income_answered: bool   — True once Q8 answered or skipped
-  life_expectancy_answered: bool  — True once Q9 answered
+  current_income_answered: bool   — True once income Q answered or skipped
+  ltcg_answered: bool             — True once LTCG Q answered or skipped
+  life_expectancy_answered: bool  — True once life expectancy answered
 
 State fields:
-  analysis_complete: bool          — True after first full analysis run
-  last_mc_results:  dict | None    — stored Monte Carlo output
-  last_tax_results: dict | None    — stored Roth optimizer output
-  last_ss_results:  dict | None    — stored SS scenario output
-  last_cy_roth_results: dict|None  — stored current-year Roth advisor output
-  last_elim_results: dict | None   — stored RMD elimination calculator output
-  last_window_results: dict | None — stored Roth conversion window optimizer output
+  analysis_complete: bool           — True after first full analysis run
+  last_mc_results:  dict | None     — stored Monte Carlo output
+  last_tax_results: dict | None     — stored Roth optimizer output
+  last_ss_results:  dict | None     — stored SS scenario output
+  last_cy_roth_results: dict | None — stored current-year Roth advisor output
+  last_elim_results: dict | None    — stored RMD elimination calculator output
+  last_window_results: dict | None  — stored Roth conversion window optimizer output
+  last_ltcg_results: dict | None    — stored LTCG harvest advisor output
+  last_bridge_results: dict | None  — stored SS bridge fund output
 ```
 
-**`is_ready()`** checks all seven data fields are non-None AND both sentinel booleans are True. Note: `ss_monthly_benefit` can be `0.0` (no SS) and `traditional_pct` can be `0.0` (all Roth) — both use `is not None` not bare truthiness.
+**`is_ready()`** checks all core data fields are non-None AND all sentinel booleans are True, plus all answered spouse fields (gated on `filing_status == "married"`). Note: `ss_monthly_benefit` can be `0.0` (no SS) and `traditional_pct` can be `0.0` (all Roth) — both use `is not None` not bare truthiness.
 
 **`next_question()`** implements strict priority order. The sequence is deliberate:
 - Retirement age first — it's the intent the user already stated
@@ -370,9 +384,12 @@ State fields:
 - Savings and spending — simulation inputs
 - Traditional % — needed for tax analysis only, asked after core Monte Carlo inputs
 - Filing status — tax analysis input
-- SS benefit — SS agent input
-- Q8: current taxable income — for Enhancement B current-year Roth advisor (skippable)
-- Q9: life expectancy — for longevity-aware SS recommendation (accepts "average" → 84)
+- Spouse questions (6 questions) — only if married; spouse age, working status, income, retire age, SS, life expectancy
+- Primary SS benefit
+- Current taxable income — for Enhancement B current-year Roth advisor (skippable)
+- Unrealized brokerage gains — for LTCG harvesting advisor (skippable)
+- Spend vs. heirs intent — only if unrealized gains > 0
+- Life expectancy — for longevity-aware SS recommendation (accepts "average" → 84)
 
 **`results_context()`** builds a structured text summary for follow-up LLM calls. Includes the full user profile, Monte Carlo results, Roth conversion recommendation, SS scenarios with the recommended strategy highlighted, current-year Roth advice, and RMD elimination option. Explicitly surfaces the recommended SS strategy so the LLM cannot default to "delay to 70 is always best."
 
@@ -454,16 +471,21 @@ This is the simplest possible routing strategy and keeps the two paths completel
 **Analysis flow (Q&A mode):**
 
 ```
-1. Run SS claiming analysis (3 scenarios: claim 62 / FRA / 70)
-2. recommended_strategy() picks best scenario from life_expectancy vs breakeven ages
-3. Run Monte Carlo × 3 (one per SS scenario, SS income offsets withdrawals)
-4. Run Roth conversion optimizer
-5. Run RMD elimination calculator (Enhancement A)
-6. Run current-year Roth advisor if current_taxable_income provided (Enhancement B)
-7. Build combined context string for LLM (includes recommended SS strategy explicitly)
-8. Call explain() with full context → Ollama → Groq → Anthropic → static
-9. Set state.analysis_complete = True, store all results
-10. Yield SSE "chat" (LLM summary) + SSE "dashboard" (full HTML)
+1. Run SS claiming analysis (3 scenarios: claim 62 / FRA / 70) — primary
+2. Run spouse SS analysis if married and spouse_ss_monthly > 0
+3. recommended_strategy() picks best scenario from life_expectancy vs breakeven ages
+4. Run Monte Carlo × 3 (one per SS scenario; SS + spouse SS income offset withdrawals)
+5. Run Roth conversion optimizer
+6. Run RMD elimination calculator (Enhancement A)
+7. Run current-year Roth advisor if current_taxable_income provided (Enhancement B)
+8. Run roth_conversion_window_optimizer (spouse SS-aware: passes spouse_ss_start_age
+   converted to primary-person age units via _spouse_ss_start_primary helper)
+9. Run ltcg_harvest_advisor if unrealized_ltcg provided (Enhancement D)
+10. Run ss_bridge_fund to compute SS delay bridge (Enhancement F)
+11. Build combined context string for LLM
+12. Call explain() → Ollama → Groq → Anthropic → static
+13. Set state.analysis_complete = True, store all results
+14. Yield SSE "chat" (LLM summary) + SSE "dashboard" (full HTML)
 ```
 
 **SSE event protocol:**
@@ -476,20 +498,28 @@ event: dashboard  → replace the entire dashboard pane with new HTML
 
 **`_build_dashboard()` — current sections:**
 
-All detail sections use native `<details>/<summary>` accordions — no JS required. The accordion chevron (`›`) rotates 90° via CSS when open. Monte Carlo summary and Assumptions box are always visible; the four detail sections are collapsed by default.
+All detail sections use native `<details>/<summary>` accordions — no JS required. The accordion chevron (`›`) rotates 90° via CSS when open. Monte Carlo summary and Assumptions box are always visible; detail sections are collapsed by default.
+
+*Always visible — Monthly Income by Phase (`_monthly_income_section()`):* 1–3 cards above the fan chart showing what the plan pays per month in each life phase. Phases adapt to single/married and whether spouse SS starts before or after primary SS. Each card breaks down portfolio draw vs SS sources (Enhancement E).
 
 *Always visible — Monte Carlo:* Success rate KPI (color-coded green/yellow/red), portfolio at retirement, median at 90, annual spending, traditional savings breakdown.
+
+*Always visible — Charts:* Monte Carlo fan chart (p10/p50/p90 bands, Chart.js 4 via CDN) and SS bar chart (3 bars, recommended highlighted green). Canvas elements in `index.html`; initialized via `initCharts()` / destroyed via `destroyCharts()` on each new dashboard render (Step 4).
 
 *Accordion 1 — Roth Conversion Strategy:*
 - If `no_opportunity`: informational note explaining why
 - If beneficial: conversion window, annual conversion amount, tax rate, side-by-side RMD comparison, lifetime tax savings
-- Followed by "Strategy Comparison: Partial vs. Full RMD Elimination" 3-column table (Enhancement A) — shown only when partial conversion is recommended and `elimination.annual_conversion > 0`
+- Followed by "Strategy Comparison: Partial vs. Full RMD Elimination" 3-column table (Enhancement A)
 
-*Accordion 2 — Roth Conversion Timeline (Window Optimizer):* Built by `_window_section()`. Shows 4 KPI cards (recommendation, optimal window ages, annual conversion amount in window, total pre-tax converted) + a per-phase bracket table (Phase | Ages | Est. Income | Bracket | Verdict). "★ Best" badge on the optimal phase; "Possible" badge on secondary candidates.
+*Accordion 2 — Roth Conversion Timeline (Window Optimizer) `_window_section()`:* 4 KPI cards (recommendation, optimal window ages, annual conversion, total converted) + per-phase bracket table (Phase | Ages | Est. Income | Bracket | Verdict). "★ Best" on optimal phase; "Possible" on secondary candidates.
 
-*Accordion 3 — Social Security Claiming Strategy:* Three side-by-side cards (claim-62 / FRA / claim-70). The recommended scenario gets a green ★ Recommended badge and `kpi-primary` highlight based on life expectancy. Breakeven ages shown below.
+*Accordion 3 — Social Security Claiming Strategy:* Primary: 3 cards (claim-62 / FRA / claim-70) with ★ Recommended badge on the life-expectancy-optimal scenario. Breakeven ages shown below. For married filers: spouse SS section appended with spouse's 3 scenarios and ★ Rec badge.
 
-*Accordion 4 — Current Year Roth Advisor (Enhancement B):* Shown only if Q8 answered. Current bracket, room to fill before next bracket, stretch option.
+*Accordion 4 — Capital Gains Harvesting (Enhancement D):* Shown only if unrealized_ltcg > 0. Annual 0% harvest amount, total harvestable over gap years, ACA cliff warning (ages 62–64), hidden Roth cost comparison.
+
+*Accordion 5 — Current Year Roth Advisor (Enhancement B):* Shown only if current_taxable_income provided. Current bracket, room to fill, stretch option.
+
+*Accordion 6 — SS Bridge Fund `_bridge_section()`:* Cash bridge size, yield-adjusted PV at 4%, monthly income breakdown during bridge period, how-it-works table (Enhancement F).
 
 *Always visible — Assumptions box:* Return assumptions, inflation rate, planning horizon.
 
@@ -514,6 +544,10 @@ All detail sections use native `<details>/<summary>` accordions — no JS requir
 **CSS classes added Step 3:** `.kpi-grid-3` (3-column grid for SS cards), `.ss-early` / `.ss-fra` / `.ss-late` (yellow/blue/green accent borders for the three claiming strategy cards).
 
 **CSS classes added (accordion):** `.accordion` (wraps `<details>`, adds top border + margin), `.accordion-header` (styles `<summary>`: uppercase label, chevron `›` via `::after`, hover color, hides default disclosure triangle). `details[open] > .accordion-header::after` rotates chevron 90° when expanded.
+
+**CSS classes added Step 4 / Enhancement E:** `.chart-container` (fixed height canvas wrapper), `.income-rows` (flex column for monthly income phase cards), `.income-row` (individual phase card with source breakdown).
+
+**Chart.js:** Loaded via CDN (`chart.js@4`) in `index.html`. `initCharts(mcData, ssData)` called after each dashboard inject; `destroyCharts()` called before re-render to avoid canvas reuse errors.
 
 ---
 
@@ -677,7 +711,9 @@ pdfplumber>=0.11        PDF parsing for document upload (Enhancement C — not y
 NextChapter/
 ├── api/
 │   ├── __init__.py
-│   └── app.py              FastAPI routes, dual-mode chat handler, SSE, dashboard HTML
+│   └── app.py              FastAPI routes, dual-mode chat handler, SSE, dashboard HTML,
+│                           _build_dashboard(), _window_section(), _bridge_section(),
+│                           _monthly_income_section()
 │
 ├── agents/
 │   ├── __init__.py
@@ -698,7 +734,8 @@ NextChapter/
 │   ├── monte_carlo.py      10,000-path retirement simulation (numpy), SS income offset
 │   ├── tax_engine.py       tax_owed(), marginal_rate(), bracket_headroom(),
 │   │                       optimize_roth_conversion(), rmd_elimination_calculator(),
-│   │                       current_year_roth_advisor(), roth_conversion_window_optimizer()
+│   │                       current_year_roth_advisor(), roth_conversion_window_optimizer(),
+│   │                       ltcg_harvest_advisor(), ss_bridge_fund()
 │   └── ss_engine.py        get_fra(), benefit_at_age(), breakeven_age(),
 │                           analyze_claiming_scenarios(), recommended_strategy()
 │
@@ -759,7 +796,7 @@ ollama pull qwen3:8b
 # http://localhost:11434/api/tags should return 200
 ```
 
-**Typical conversation flow (9 questions):**
+**Typical conversation flow — single filer (11 questions):**
 
 1. "Can I retire at 63?"
 2. Current age → "55"
@@ -769,8 +806,18 @@ ollama pull qwen3:8b
 6. Filing status → "single"
 7. SS monthly benefit → "$2,200"
 8. Current taxable income → "$120k" (or "skip")
-9. Life expectancy → "87" (or "average")
-→ Analysis runs (Monte Carlo + Roth + RMD elimination + SS scenarios + current-year Roth + LLM)
+9. Unrealized brokerage gains → "$200k" (or "skip")
+10. Spend vs. heirs intent → "spend" (only if gains > 0)
+11. Life expectancy → "87" (or "average")
+→ Analysis runs; Monte Carlo + Roth + RMD elimination + window optimizer + SS + LTCG + bridge + LLM
+
+**Married filer adds up to 6 more questions after filing status:**
+7a. Spouse age
+7b. Spouse working? (no → skip income/retire)
+7c. Spouse income + retire age (if working)
+7d. Spouse SS at FRA (0 = no SS)
+7e. Spouse life expectancy (only if spouse SS > 0)
+
 Follow-up: "Should I start converting now?" → direct LLM answer, no re-analysis
 
 ---
@@ -788,7 +835,12 @@ Follow-up: "Should I start converting now?" → direct LLM answer, no re-analysi
 | **Enh A** | RMD Elimination Calculator — annuity-drain formula computes annual conversion to zero trad IRA by 73; comparison table on dashboard. | **Complete** | `engines/tax_engine.py` (`rmd_elimination_calculator`), `planner.py`, `app.py` |
 | **Accordion** | Dashboard detail sections use native `<details>/<summary>` accordions (no JS). Chevron rotates on open. | **Complete** | `api/app.py`, `web/static/style.css` |
 | **Win Opt** | Roth Conversion Window Optimizer — projects 4 life stages, finds optimal conversion phase, sets recommendation (start_now / wait / passed / never). | **Complete** | `engines/tax_engine.py` (`roth_conversion_window_optimizer`), `api/app.py` (`_window_section`), `agents/planner.py` |
-| **4** | Charts — Monte Carlo fan chart (p10/p50/p90 bands over time), SS comparison bar. No npm build step — inline SVG or CDN Chart.js. | **Pending** | Dashboard additions in `app.py`, `web/static/charts.js` |
-| **Enh C** | Paycheck Upload — PDF → auto-calculate current taxable income (pre-fills Q8). `pdfplumber` already in requirements. | Pending | `agents/document_agent.py`, `api/upload.py` |
+| **Spouse SS** | Full Spouse Profile — 6 spouse Q&A questions; spouse SS wired into Monte Carlo + window optimizer; Spouse SS card with ★ Rec on dashboard; bug fix for older-spouse age-unit conversion. | **Complete** | `agents/planner.py`, `api/app.py`, `engines/monte_carlo.py`, `engines/tax_engine.py` |
+| **4** | Charts — Monte Carlo fan chart (p10/p50/p90 bands), SS bar chart (3 bars, recommended highlighted green). Chart.js 4 via CDN. | **Complete** | `api/app.py`, `web/templates/index.html`, `web/static/style.css` |
+| **Enh D** | 0% LTCG Harvesting Advisor — harvest room using 2026 thresholds; ACA cliff constraint ages 62–64; hidden Roth cost analysis; 2 new Q&A questions (unrealized gains + spend-vs-heirs intent). | **Complete** | `engines/tax_engine.py` (`ltcg_harvest_advisor`), `agents/planner.py`, `api/app.py` |
+| **Enh E** | Monthly Income by Phase — 1–3 cards above fan chart showing monthly portfolio draw + SS sources per phase; adapts to single/married and spouse SS timing. | **Complete** | `api/app.py` (`_monthly_income_section`) |
+| **Enh F** | SS Bridge Fund Calculator — cash bridge + yield-adjusted PV-of-annuity at 4%; how-it-works table; invested portfolio size. | **Complete** | `engines/tax_engine.py` (`ss_bridge_fund`), `api/app.py` (`_bridge_section`) |
+| **Enh C** | Paycheck Upload — PDF → auto-calculate current taxable income (pre-fills income Q). `pdfplumber` already in requirements. | Pending | `agents/document_agent.py`, `api/upload.py` |
+| **Enh G** | ACA / Pre-Medicare Income Management — shown when `retirement_age < 65`; ACA cliff thresholds; income sourcing strategy (bridge principal, Roth, cost basis = not taxable). Requires new Q for taxable account cost basis. | Pending | `engines/tax_engine.py`, `agents/planner.py`, `api/app.py` |
 | **5** | Full Digital Twin + what-if scenarios. Side-by-side comparison (e.g., retire at 63 vs 65). Spouse support, spending categories, user-adjustable assumptions. Session persistence. | Pending | `core/digital_twin.py` expansion, `api/scenarios.py` |
 | **6** | Medicare Agent + IRMAA. Depends on Step 5 (need full twin with income projections). | Pending | `engines/medicare_engine.py`, `data/irmaa_rules.json` |
