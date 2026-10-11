@@ -242,7 +242,7 @@ async def chat(request: Request, message: str = Form(...)):
 
         # ── ACA / Pre-Medicare Income Manager ─────────────────────────────────
         aca = None
-        if state.retirement_age < 65:
+        if state.retirement_age < 65 and state.age < 65:
             aca = aca_income_manager(
                 twin,
                 ss_claiming_age=_win_ss_age,
@@ -786,6 +786,7 @@ def _aca_section(aca: dict) -> str:
         return ""
 
     ret_age      = aca["retirement_age"]
+    gap_start    = aca["gap_start"]
     cliff        = aca["aca_cliff"]
     magi_worst   = aca["magi_worst"]
     magi_free    = aca["magi_free_bucket"]
@@ -809,7 +810,7 @@ def _aca_section(aca: dict) -> str:
 
     top = f"""<div class="kpi-grid">
   <div class="kpi kpi-primary">
-    <div class="kpi-label">ACA Subsidy Status (ages {ret_age}&ndash;64)</div>
+    <div class="kpi-label">ACA Subsidy Status (ages {gap_start}&ndash;64)</div>
     <div class="kpi-value" style="font-size:20px;color:{risk_color}">{risk_label}</div>
     <div class="kpi-sub">{rec_note}</div>
   </div>
@@ -850,7 +851,7 @@ def _aca_section(aca: dict) -> str:
         )
 
     table = f"""<div class="assumptions-box">
-  <div class="assumptions-title">Income Sources &mdash; MAGI Impact (ages {ret_age}&ndash;64)</div>
+  <div class="assumptions-title">Income Sources &mdash; MAGI Impact (ages {gap_start}&ndash;64)</div>
   <div class="assumptions-row"><span>Traditional IRA / 401k draws</span><span style="color:#ef4444">&#9679; Fully taxable &mdash; counts toward MAGI</span></div>
   <div class="assumptions-row"><span>Roth IRA / Roth 401k draws</span><span style="color:#22c55e">&#9679; MAGI-exempt &mdash; no MAGI impact</span></div>
   <div class="assumptions-row"><span>Taxable brokerage &mdash; cost basis</span><span style="color:#22c55e">&#9679; MAGI-exempt &mdash; {basis_note}</span></div>
@@ -859,7 +860,7 @@ def _aca_section(aca: dict) -> str:
 </div>"""
 
     return f"""<details class="accordion">
-<summary class="accordion-header">Pre-Medicare Coverage &mdash; ACA Subsidy (ages {ret_age}&ndash;64)</summary>
+<summary class="accordion-header">Pre-Medicare Coverage &mdash; ACA Subsidy (ages {gap_start}&ndash;64)</summary>
 {top}
 {table}
 </details>"""

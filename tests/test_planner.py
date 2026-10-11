@@ -610,3 +610,17 @@ class TestAcaCostBasisQuestion:
         s.life_expectancy = 84
         s.life_expectancy_answered = True
         assert s.is_ready() is True
+
+    def test_aca_question_not_asked_when_current_age_is_65(self):
+        # Retired early but now on Medicare — no ACA question
+        s = self._base_state(retirement_age=62)
+        s.age = 65
+        q = s.next_question().lower()
+        assert "live" in q or "age" in q or "life" in q
+
+    def test_is_ready_does_not_require_aca_when_age_65(self):
+        s = self._base_state(retirement_age=62)
+        s.age = 65
+        s.life_expectancy = 84
+        s.life_expectancy_answered = True
+        assert s.is_ready() is True

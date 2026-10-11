@@ -789,3 +789,44 @@ class TestAcaIncomeManager:
         result_trad = aca_income_manager(twin_mostly_trad, ss_claiming_age=999, ss_monthly_at_claiming=0)
         result_roth = aca_income_manager(twin_mostly_roth, ss_claiming_age=999, ss_monthly_at_claiming=0)
         assert result_roth["magi_free_bucket"] > result_trad["magi_free_bucket"]
+
+    # -- already-retired scenarios --------------------------------------------
+
+    def test_not_applicable_when_current_age_is_65(self):
+        # Already on Medicare — ACA not relevant even if retirement_age was < 65
+        twin = _twin(age=65, retirement_age=62, savings=1_000_000,
+                     traditional_pct=0.80, spending=55_000, filing_status="single")
+        result = aca_income_manager(twin, ss_claiming_age=999, ss_monthly_at_claiming=0)
+        assert result["applicable"] is False
+
+    def test_already_retired_gap_start_is_current_age(self):
+        # Retired at 61, now 63 — gap starts from current age, not retirement age
+        twin = _twin(age=63, retirement_age=61, savings=1_000_000,
+                     traditional_pct=0.80, spending=55_000, filing_status="single")
+        result = aca_income_manager(twin, ss_claiming_age=999, ss_monthly_at_claiming=0)
+        assert result["applicable"] is True
+        assert result["already_retired"] is True
+        assert result["gap_start"] == 63
+        assert result["pre_medicare_years"] == 2  # ages 63 and 64
+
+    def test_already_retired_pre_medicare_years_correct(self):
+        # Currently 63, not yet retired planning to retire at 64 — gap starts at 64
+        twin = _twin(age=63, retirement_age=64, savings=1_000_000,
+                     traditional_pct=0.80, spending=55_000, filing_status="single")
+        result = aca_income_manager(twin, ss_claiming_age=999, ss_monthly_at_claiming=0)
+        assert result["gap_start"] == 64
+        assert result["pre_medicare_years"] == 1  # age 64 only
+
+    def test_not_yet_retired_gap_start_is_retirement_age(self):
+        # Age 55, retiring at 62 — gap_start should be retirement age
+        twin = self._twin_single(retirement_age=62)  # age=55
+        result = aca_income_manager(twin, ss_claiming_age=999, ss_monthly_at_claiming=0)
+        assert result["already_retired"] is False
+        assert result["gap_start"] == 62
+        assert result["pre_medicare_years"] == 3  # ages 62, 63, 64
+
+    def test_already_retired_flag_in_recommendation_note(self):
+        twin = _twin(age=63, retirement_age=62, savings=1_000_000,
+                     traditional_pct=0.80, spending=55_000, filing_status="single")
+        result = aca_income_manager(twin, ss_claiming_age=999, ss_monthly_at_claiming=0)
+        assert "currently" in result["recommendation_note"].lower()

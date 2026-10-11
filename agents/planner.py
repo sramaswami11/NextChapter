@@ -46,10 +46,11 @@ class ConversationState:
             if (self.unrealized_ltcg is not None and self.unrealized_ltcg > 0)
             else True
         )
-        # ACA question is only asked (and required) when retiring before Medicare age 65
+        # ACA question only when retiring before 65 AND not yet on Medicare (age < 65)
         _aca_ok = (
             self.taxable_cost_basis_answered
-            if (self.retirement_age is not None and self.retirement_age < 65)
+            if (self.retirement_age is not None and self.retirement_age < 65
+                and self.age is not None and self.age < 65)
             else True
         )
         return (
@@ -133,6 +134,8 @@ class ConversationState:
         if (
             self.retirement_age is not None
             and self.retirement_age < 65
+            and self.age is not None
+            and self.age < 65
             and not self.taxable_cost_basis_answered
         ):
             return (
@@ -508,6 +511,8 @@ def process_message(state: ConversationState, text: str) -> None:
     if (
         state.retirement_age is not None
         and state.retirement_age < 65
+        and state.age is not None
+        and state.age < 65
         and not state.taxable_cost_basis_answered
     ):
         t = text.lower().strip()

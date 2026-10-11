@@ -977,28 +977,41 @@ def aca_income_manager(
     Shows projected MAGI against the ACA subsidy cliff and how to source income
     to preserve eligibility during the healthcare coverage gap.
 
+    Works for both pre-retirees (approaching the gap) and already-retired people
+    (currently in the gap). For already-retired users, pre_medicare_years reflects
+    years remaining in the gap, not the full gap from retirement.
+
     The key insight: MAGI = traditional IRA draws + 85% of SS. Roth draws and
     return of taxable cost basis are MAGI-exempt, letting the retiree stay under
     the cliff even if total spending exceeds it.
     """
     retirement_age = twin.person.retirement_age
+    current_age = twin.person.age
+
     if retirement_age >= 65:
         return {"applicable": False}
+    if current_age >= 65:
+        # Already on Medicare — section not relevant
+        return {"applicable": False}
+
+    already_retired = current_age >= retirement_age
+    # Gap start = retirement age for pre-retirees; current age for already-retired
+    gap_start = max(retirement_age, current_age)
+    # Years remaining in the pre-Medicare gap from gap_start through end of age 64
+    pre_medicare_years = max(0, 64 - gap_start + 1)
 
     fs = twin.tax_profile.filing_status
     annual_spending = twin.spending.annual
     aca_cliff = _ACA_CLIFF[fs]
 
-    # Years covered: retirement through end of age 64 (Medicare starts at 65)
-    pre_medicare_years = 64 - retirement_age + 1
-
     # Project the non-traditional (Roth + taxable brokerage) balance to retirement.
+    # For already-retired users years_to_ret = 0, so we use the current balance.
     # Roth withdrawals are always MAGI-exempt; taxable cost-basis draws are also
     # MAGI-exempt (return of principal), so the full non-traditional bucket is a
     # reasonable MAGI-free estimate.
     a = twin.assumptions
     mu = a.stock_pct * a.stock_return + (1 - a.stock_pct) * a.bond_return
-    years_to_ret = max(0, retirement_age - twin.person.age)
+    years_to_ret = max(0, retirement_age - current_age)
     magi_free_bucket = twin.accounts.roth_balance * (1 + mu) ** years_to_ret
     magi_free_years = (
         round(magi_free_bucket / annual_spending, 1) if annual_spending > 0 else 99.9
@@ -1026,30 +1039,35 @@ def aca_income_manager(
     else:
         risk = "at_risk"
 
+    gap_label = f"ages {gap_start}–64"
+    now_prefix = "You're currently in the pre-Medicare gap. " if already_retired else ""
+
     if risk == "safe":
         rec_note = (
-            f"Your spending of ${annual_spending:,.0f}/yr stays below the ACA cliff of "
-            f"${aca_cliff:,.0f}. Even drawing entirely from pre-tax accounts, your MAGI "
-            f"stays under the threshold — ACA subsidies should be available during ages "
-            f"{retirement_age}–64."
+            f"{now_prefix}Your spending of ${annual_spending:,.0f}/yr stays below the ACA "
+            f"cliff of ${aca_cliff:,.0f}. Even drawing entirely from pre-tax accounts, your "
+            f"MAGI stays under the threshold — ACA subsidies should be available during {gap_label}."
         )
     elif risk == "manageable":
         rec_note = (
-            f"Keep pre-tax draws to ${safe_trad_draw:,.0f}/yr and cover the remaining "
-            f"${roth_needed_annually:,.0f}/yr from Roth or taxable cost basis. "
+            f"{now_prefix}Keep pre-tax draws to ${safe_trad_draw:,.0f}/yr and cover the "
+            f"remaining ${roth_needed_annually:,.0f}/yr from Roth or taxable cost basis. "
             f"Your MAGI-free bucket (${magi_free_bucket:,.0f}) covers {magi_free_years} years "
-            f"— enough to bridge ages {retirement_age}–64."
+            f"— enough to bridge {gap_label}."
         )
     else:
         rec_note = (
-            f"Your spending of ${annual_spending:,.0f}/yr exceeds the ACA cliff of "
-            f"${aca_cliff:,.0f}. Full subsidies may not be available. Maximize Roth and "
-            f"cost-basis draws to reduce MAGI as much as possible during ages {retirement_age}–64."
+            f"{now_prefix}Your spending of ${annual_spending:,.0f}/yr exceeds the ACA cliff "
+            f"of ${aca_cliff:,.0f}. Full subsidies may not be available. Maximize Roth and "
+            f"cost-basis draws to reduce MAGI as much as possible during {gap_label}."
         )
 
     return {
         "applicable": True,
         "retirement_age": retirement_age,
+        "current_age": current_age,
+        "already_retired": already_retired,
+        "gap_start": gap_start,
         "pre_medicare_years": pre_medicare_years,
         "aca_cliff": aca_cliff,
         "filing_status": fs,
