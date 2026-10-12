@@ -157,6 +157,12 @@ async def chat(request: Request, message: str = Form(...)):
             if state.spouse_age is not None and spouse_ss_claiming_age < 900
             else spouse_ss_claiming_age
         )
+        # If spouse is already past their SS claiming age at primary's retirement (e.g. spouse is 71),
+        # clamp to retirement_age so phases start from day-1 of retirement, not the past.
+        if (state.retirement_age is not None
+                and _spouse_ss_start_primary < state.retirement_age
+                and _spouse_ss_start_primary < 900):
+            _spouse_ss_start_primary = float(state.retirement_age)
         # spouse_retirement_age is stored in spouse's own age; convert to primary's age.
         _spouse_ret_primary = (
             state.spouse_retirement_age + _age_offset
@@ -712,10 +718,16 @@ def _monthly_income_section(
             })
         if has_primary_ss and has_spouse_ss and int(ss_rec_age) != int(spouse_ss_start_primary_age):
             if spouse_ss_start_primary_age < ss_rec_age:
-                # Older spouse: spouse SS starts first
+                # Older spouse: spouse SS already active (or starts first)
                 p2 = max(0.0, monthly_spending - spouse_ss_monthly_rec)
+                # When spouse SS was already flowing before retirement, label reflects the wait for primary SS
+                _mid_label = (
+                    "Before Your SS"
+                    if int(spouse_ss_start_primary_age) <= retirement_age
+                    else "After Spouse SS"
+                )
                 phases.append({
-                    "label": "After Spouse SS",
+                    "label": _mid_label,
                     "ages": f"ages {int(spouse_ss_start_primary_age)}–{int(ss_rec_age) - 1}",
                     "portfolio": p2,
                     "primary_ss": 0.0,
