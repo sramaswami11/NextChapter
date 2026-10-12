@@ -116,6 +116,16 @@ class TestExtractRetirementAge:
     def test_standard_phrases(self, text, expected):
         assert extract_retirement_age(text) == expected
 
+    @pytest.mark.parametrize("text,expected", [
+        ("I retired at 65 in 2025",      65),
+        ("retired at age 62",            62),
+        ("I already retired at 60",      60),
+        ("I'm retiring at 63",           63),
+        ("retiring at age 67",           67),
+    ])
+    def test_past_and_progressive_tense(self, text, expected):
+        assert extract_retirement_age(text) == expected
+
     def test_returns_none_when_no_age(self):
         assert extract_retirement_age("I want to retire someday") is None
 

@@ -349,9 +349,9 @@ def _parse_number(text: str) -> Optional[float]:
 
 
 def extract_retirement_age(text: str) -> Optional[int]:
-    """Pull age from phrases like 'retire at 63', 'retire at age 65', 'retire when I'm 67'."""
+    """Pull age from phrases like 'retire at 63', 'retired at 65', 'retiring at 67', 'retire when I'm 67'."""
     m = re.search(
-        r"retire\s+(?:at\s+age|at|around|by|when\s+i(?:'?m|\s+am))\s+(\d+)",
+        r"retir(?:e[d]?|ing)\s+(?:at\s+age|at|around|by|when\s+i(?:'?m|\s+am))\s+(\d+)",
         text.lower(),
     )
     if m:
