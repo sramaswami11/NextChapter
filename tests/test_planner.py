@@ -367,9 +367,10 @@ class TestProcessMessage:
             "80%",
             "single",
             "2200",
-            "$120k",
-            "no",    # no brokerage gains
-            "none",  # ACA: no taxable brokerage cost basis (retirement_age < 65)
+            "$120k",  # Q13a: gross income
+            "skip",   # Q13b: pretax deductions (skipped → taxable = gross)
+            "no",     # no brokerage gains
+            "none",   # ACA: no taxable brokerage cost basis (retirement_age < 65)
             "87",
         ])
         assert state.retirement_age == 63
@@ -379,6 +380,7 @@ class TestProcessMessage:
         assert state.traditional_pct == pytest.approx(0.80)
         assert state.filing_status == "single"
         assert state.ss_monthly_benefit == pytest.approx(2_200)
+        assert state.gross_income == pytest.approx(120_000)
         assert state.current_taxable_income == pytest.approx(120_000)
         assert state.taxable_cost_basis == pytest.approx(0.0)
         assert state.life_expectancy == 87
@@ -394,8 +396,9 @@ class TestProcessMessage:
             "80%",
             "single",
             "2200",
-            "$120k",
-            "no",   # no brokerage gains
+            "$120k",  # Q13a: gross income
+            "skip",   # Q13b: pretax deductions (skipped → taxable = gross)
+            "no",     # no brokerage gains
             "87",
         ])
         assert state.retirement_age == 65
@@ -422,6 +425,34 @@ class TestProcessMessage:
         ])
         assert state.current_income_answered is True
         assert state.current_taxable_income is None
+
+    def test_gross_minus_pretax_computes_taxable_income(self):
+        state = self._run_flow([
+            "retire at 65", "55", "$800k", "$60k", "80%", "single", "2200", "$150k", "$27k",
+        ])
+        assert state.gross_income == pytest.approx(150_000)
+        assert state.pretax_deductions == pytest.approx(27_000)
+        assert state.current_taxable_income == pytest.approx(123_000)
+        assert state.current_income_answered is True
+
+    def test_pretax_skip_uses_full_gross(self):
+        state = self._run_flow([
+            "retire at 65", "55", "$800k", "$60k", "80%", "single", "2200", "$150k", "skip",
+        ])
+        assert state.gross_income == pytest.approx(150_000)
+        assert state.pretax_deductions is None
+        assert state.current_taxable_income == pytest.approx(150_000)
+        assert state.current_income_answered is True
+
+    def test_income_q13b_asks_pretax(self):
+        s = ConversationState(
+            retirement_age=65, age=55, savings=800_000,
+            annual_spending=60_000, traditional_pct=0.80,
+            filing_status="single", ss_monthly_benefit=2_000.0,
+            gross_income=150_000,
+        )
+        q = s.next_question().lower()
+        assert "401k" in q or "pre-tax" in q or "pretax" in q or "hsa" in q
 
     def test_life_expectancy_average_sets_84(self):
         # retirement_age=63 → ACA question appears before life expectancy
@@ -491,9 +522,10 @@ class TestProcessMessage:
             "1800",  # spouse SS benefit
             "85",    # spouse life expectancy
             "2200",
-            "$120k",
-            "no",    # no brokerage gains
-            "none",  # ACA: no taxable brokerage cost basis
+            "$120k",  # Q13a: gross income
+            "skip",   # Q13b: pretax deductions (skipped → taxable = gross)
+            "no",     # no brokerage gains
+            "none",   # ACA: no taxable brokerage cost basis
             "87",
         ])
         assert state.filing_status == "married"

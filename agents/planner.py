@@ -19,7 +19,9 @@ class ConversationState:
     spouse_life_expectancy: Optional[int] = None
     spouse_questions_answered: bool = False
     ss_monthly_benefit: Optional[float] = None  # monthly PIA at FRA; 0 = no SS
-    current_taxable_income: Optional[float] = None  # gross income this year; None = skipped
+    gross_income: Optional[float] = None            # annual gross salary/income (Q13a)
+    pretax_deductions: Optional[float] = None       # annual 401k + HSA pre-tax contributions (Q13b)
+    current_taxable_income: Optional[float] = None  # derived: gross - pretax; None = skipped
     current_income_answered: bool = False
     unrealized_ltcg: Optional[float] = None   # long-term gains in taxable brokerage; 0 = none
     ltcg_answered: bool = False
@@ -111,11 +113,17 @@ class ConversationState:
                 "(Check ssa.gov — it's on your statement. Type 0 if you don't have SS benefits.)"
             )
         if not self.current_income_answered:
-            return (
-                "What is your expected total taxable income this year from all sources — "
-                "wages, interest, dividends, and any other income? "
-                "(e.g. '$95k', '$200k') Type 'skip' if you'd prefer to skip this."
-            )
+            if self.gross_income is None:
+                return (
+                    "What is your annual gross salary or total income this year? "
+                    "(e.g. '$150k', '$95k') Type 'skip' if you'd prefer not to share."
+                )
+            else:
+                return (
+                    "Do you contribute to a 401k, 403b, or HSA? How much per year total "
+                    "in pre-tax contributions? Common amounts: $23,500 (401k max), "
+                    "$4,300 (HSA max). (e.g. '$27k', '$18k' — type 'none' or 'skip' if unsure.)"
+                )
         if not self.ltcg_answered:
             return (
                 "Do you have a taxable brokerage account (outside your 401k/IRA) with "
@@ -467,13 +475,22 @@ def process_message(state: ConversationState, text: str) -> None:
 
     if not state.current_income_answered:
         t = text.lower().strip()
-        if any(w in t for w in ("skip", "pass", "no", "not sure", "don't know", "none")):
-            state.current_income_answered = True
+        if state.gross_income is None:
+            # Q13a: gross salary
+            if any(w in t for w in ("skip", "pass", "no", "not sure", "don't know", "none")):
+                state.current_income_answered = True  # skip both questions
+            else:
+                num = _parse_number(text)
+                if num is not None and num >= 0:
+                    state.gross_income = num  # wait for Q13b before finalizing
         else:
-            num = _parse_number(text)
-            if num is not None and num >= 0:
-                state.current_taxable_income = num
-                state.current_income_answered = True
+            # Q13b: pre-tax deductions
+            if not any(w in t for w in ("skip", "pass", "none", "no", "not sure", "don't know", "zero", "don't contribute", "do not")):
+                num = _parse_number(text)
+                if num is not None and num >= 0:
+                    state.pretax_deductions = num
+            state.current_taxable_income = max(0.0, state.gross_income - (state.pretax_deductions or 0.0))
+            state.current_income_answered = True
         return
 
     if not state.ltcg_answered:
