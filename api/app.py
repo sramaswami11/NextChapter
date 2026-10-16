@@ -1113,6 +1113,17 @@ def _build_dashboard(
   <div class="assumptions-row"><span>Spouse&#8217;s estimated life expectancy</span><span>age {spouse_le or 84}</span></div>
 </div>"""
 
+            if twin.ss.monthly_pia > 0:
+                spousal_benefit = 0.5 * twin.ss.monthly_pia
+                if spouse_ss_data["pia_monthly"] < spousal_benefit:
+                    ss_section += f"""
+<div class="assumptions-box" style="margin-top:12px;border-left:3px solid #f59e0b">
+  <div class="assumptions-title" style="color:#f59e0b">&#9888; Spousal Benefit May Apply</div>
+  <div class="assumptions-row"><span>50% of your PIA (spousal benefit)</span><span>${spousal_benefit:,.0f}/mo</span></div>
+  <div class="assumptions-row"><span>Spouse&#8217;s own benefit</span><span>${spouse_ss_data["pia_monthly"]:,.0f}/mo</span></div>
+  <div class="roth-note" style="margin-top:8px">Spouse&#8217;s own record yields less than half your PIA. SSA pays the higher amount automatically &mdash; the spouse may receive <strong>${spousal_benefit:,.0f}/mo</strong> at FRA instead of <strong>${spouse_ss_data["pia_monthly"]:,.0f}/mo</strong>. Verify at <a href="https://www.ssa.gov" target="_blank" rel="noopener">ssa.gov</a>.</div>
+</div>"""
+
         ss_section += "</details>"
     else:
         ss_section = '<details class="accordion"><summary class="accordion-header">Social Security</summary><div class="roth-note">Social Security: not included in this analysis.</div></details>'
