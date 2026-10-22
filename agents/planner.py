@@ -73,60 +73,60 @@ class ConversationState:
 
     def next_question(self) -> str:
         if self.retirement_age is None:
-            return "At what age would you like to retire?"
+            return "Q1. At what age would you like to retire?"
         if self.age is None:
-            return "What is your current age?"
+            return "Q2. What is your current age?"
         if self.savings is None:
-            return "What is your total retirement savings today? (401k + IRA + investments, e.g. $1.2M or $800k)"
+            return "Q3. What is your total retirement savings today? (401k + IRA + investments, e.g. $1.2M or $800k)"
         if self.annual_spending is None:
-            return "How much do you expect to spend per year in retirement? (today's dollars, e.g. $80k)"
+            return "Q4. How much do you expect to spend per year in retirement? (today's dollars, e.g. $80k)"
         if self.traditional_pct is None:
             return (
-                f"Of your ${self.savings:,.0f} in savings, what percentage is in traditional "
+                f"Q5. Of your ${self.savings:,.0f} in savings, what percentage is in traditional "
                 f"(pre-tax) accounts like a 401k or traditional IRA? "
                 f"(e.g. '80%', 'all of it', 'about half')"
             )
         if self.filing_status is None:
-            return "Are you filing taxes as single or married?"
+            return "Q6. Are you filing taxes as single or married?"
         if not self.spouse_questions_answered and self.filing_status == "married":
             if self.spouse_age is None:
-                return "How old is your spouse?"
+                return "Q7. How old is your spouse?"
             if self.spouse_working is None:
-                return "Is your spouse currently working? (yes or no)"
+                return "Q8. Is your spouse currently working? (yes or no)"
             if self.spouse_working and self.spouse_income is None:
-                return "What is your spouse's annual income from work? (e.g. $85k)"
+                return "Q9a. What is your spouse's annual income from work? (e.g. $85k)"
             if self.spouse_working and self.spouse_retirement_age is None:
-                return "At what age does your spouse plan to retire?"
+                return "Q9b. At what age does your spouse plan to retire?"
             if self.spouse_ss_benefit is None:
                 return (
-                    "What is your spouse's estimated monthly Social Security benefit at their "
+                    "Q10. What is your spouse's estimated monthly Social Security benefit at their "
                     "full retirement age? (Check ssa.gov — type 0 if they have no SS benefits.)"
                 )
             if self.spouse_ss_benefit > 0 and self.spouse_life_expectancy is None:
                 return (
-                    "What age do you expect your spouse to live to? "
+                    "Q11. What age do you expect your spouse to live to? "
                     "(e.g. 85, 90 — or type 'average' for 84)"
                 )
         if self.ss_monthly_benefit is None:
             return (
-                "What is your estimated monthly Social Security benefit at full retirement age? "
+                "Q12. What is your estimated monthly Social Security benefit at full retirement age? "
                 "(Check ssa.gov — it's on your statement. Type 0 if you don't have SS benefits.)"
             )
         if not self.current_income_answered:
             if self.gross_income is None:
                 return (
-                    "What is your annual gross salary or total income this year? "
+                    "Q13a. What is your annual gross salary or total income this year? "
                     "(e.g. '$150k', '$95k') Type 'skip' if you'd prefer not to share."
                 )
             else:
                 return (
-                    "Do you contribute to a 401k, 403b, or HSA? How much per year total "
+                    "Q13b. Do you contribute to a 401k, 403b, or HSA? How much per year total "
                     "in pre-tax contributions? Common amounts: $23,500 (401k max), "
                     "$4,300 (HSA max). (e.g. '$27k', '$18k' — type 'none' or 'skip' if unsure.)"
                 )
         if not self.ltcg_answered:
             return (
-                "Do you have a taxable brokerage account (outside your 401k/IRA) with "
+                "Q14. Do you have a taxable brokerage account (outside your 401k/IRA) with "
                 "unrealized long-term capital gains? If so, roughly how much in gains? "
                 "(e.g. '$150k', '$50k' — type 'no' or 'skip' if you don't.)"
             )
@@ -136,7 +136,7 @@ class ConversationState:
             and not self.estate_intent_answered
         ):
             return (
-                "Do you plan to spend this brokerage money in retirement, "
+                "Q15. Do you plan to spend this brokerage money in retirement, "
                 "or leave it to your heirs? (type 'spend' or 'heirs' — or 'skip')"
             )
         if (
@@ -147,7 +147,7 @@ class ConversationState:
             and not self.taxable_cost_basis_answered
         ):
             return (
-                "Since you're retiring before Medicare at 65, ACA health insurance will "
+                "Q15b. Since you're retiring before Medicare at 65, ACA health insurance will "
                 "cover the gap. Do you have a taxable brokerage account (outside your "
                 "401k/IRA)? If so, what was your original invested amount — the cost basis, "
                 "not the current value? This helps us check your ACA subsidy exposure. "
@@ -155,7 +155,7 @@ class ConversationState:
             )
         if not self.life_expectancy_answered:
             return (
-                "What age do you expect to live to? This helps us recommend the right "
+                "Q16. What age do you expect to live to? This helps us recommend the right "
                 "Social Security claiming age. (e.g. 85, 90 — or type 'average' for 84)"
             )
         return ""
