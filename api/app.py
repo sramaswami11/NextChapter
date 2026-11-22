@@ -1,10 +1,13 @@
 import asyncio
 import json
+import os
+import smtplib
+import ssl
 import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from agents.planner import ConversationState, extract_retirement_age, process_message
@@ -27,6 +30,33 @@ _INDEX_HTML = Path("web/templates/index.html")
 
 # In-memory sessions keyed by cookie (Step 1: single-user demo)
 sessions: dict[str, ConversationState] = {}
+
+_LEAD_SENDER = "sramaswami2021@gmail.com"
+
+
+def _send_lead_notification(email: str) -> bool:
+    password = os.environ.get("GMAIL_APP_PASSWORD", "")
+    if not password:
+        print(f"[lead] captured (no SMTP): {email}")
+        return True
+    subject = "NextChapter — New Lead"
+    body = f"Subject: {subject}\nFrom: {_LEAD_SENDER}\nTo: {_LEAD_SENDER}\n\nNew signup: {email}"
+    try:
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx) as srv:
+            srv.login(_LEAD_SENDER, password)
+            srv.sendmail(_LEAD_SENDER, _LEAD_SENDER, body)
+        print(f"[lead] notified: {email}")
+        return True
+    except Exception as exc:
+        print(f"[lead] SMTP error: {exc}")
+        return False
+
+
+@app.post("/save-email")
+async def save_email(email: str = Form(...)):
+    ok = _send_lead_notification(email.strip().lower())
+    return JSONResponse({"ok": ok})
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1195,4 +1225,15 @@ def _build_dashboard(
 {ss_section}
 {bridge_section}
 {aca_section}
+<div class="assumptions-box" style="margin-top:24px;border-left:3px solid #6366f1">
+  <div class="assumptions-title" style="color:#6366f1">Stay in the Loop</div>
+  <div class="roth-note" style="margin-bottom:12px">Get notified when we add Medicare planning, state taxes, withdrawal sequencing, and more.</div>
+  <form id="email-capture-form" onsubmit="submitEmail(event)" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <input type="email" id="email-input" placeholder="your@email.com" required
+           style="flex:1;min-width:200px;padding:8px 12px;background:#1e293b;border:1px solid #334155;border-radius:6px;color:#f1f5f9;font-size:14px">
+    <button type="submit" id="email-submit-btn"
+            style="padding:8px 16px;background:#6366f1;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:14px;white-space:nowrap">Notify me</button>
+  </form>
+  <div id="email-status" style="margin-top:8px;font-size:13px;color:#94a3b8"></div>
+</div>
 """

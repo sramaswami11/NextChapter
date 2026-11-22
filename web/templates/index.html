@@ -212,6 +212,35 @@ async function sendMessage(e) {
   setStatus('', '');
 }
 
+async function submitEmail(e) {
+  e.preventDefault();
+  const email = document.getElementById('email-input').value.trim();
+  const status = document.getElementById('email-status');
+  const btn = document.getElementById('email-submit-btn');
+  btn.disabled = true;
+  status.style.color = '#94a3b8';
+  status.textContent = 'Saving...';
+  try {
+    const fd = new FormData();
+    fd.append('email', email);
+    const r = await fetch('/save-email', { method: 'POST', body: fd });
+    const data = await r.json();
+    if (data.ok) {
+      status.style.color = '#22c55e';
+      status.textContent = "You're on the list — we'll reach out when new features ship.";
+      document.getElementById('email-capture-form').style.display = 'none';
+    } else {
+      status.style.color = '#ef4444';
+      status.textContent = 'Something went wrong — try again.';
+      btn.disabled = false;
+    }
+  } catch {
+    status.style.color = '#ef4444';
+    status.textContent = 'Something went wrong — try again.';
+    btn.disabled = false;
+  }
+}
+
 async function resetSession() {
   await fetch('/reset', { method: 'POST' });
   destroyCharts();
