@@ -1,8 +1,6 @@
 import asyncio
 import json
 import os
-import smtplib
-import ssl
 import uuid
 from pathlib import Path
 
@@ -35,21 +33,23 @@ _LEAD_SENDER = "sramaswami2021@gmail.com"
 
 
 def _send_lead_notification(email: str) -> bool:
-    password = os.environ.get("GMAIL_APP_PASSWORD", "")
-    if not password:
-        print(f"[lead] captured (no SMTP): {email}")
+    api_key = os.environ.get("RESEND_API_KEY", "")
+    if not api_key:
+        print(f"[lead] captured (no Resend key): {email}")
         return True
-    subject = "NextChapter — New Lead"
-    body = f"Subject: {subject}\nFrom: {_LEAD_SENDER}\nTo: {_LEAD_SENDER}\n\nNew signup: {email}"
     try:
-        ctx = ssl.create_default_context()
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx) as srv:
-            srv.login(_LEAD_SENDER, password)
-            srv.sendmail(_LEAD_SENDER, _LEAD_SENDER, body)
+        import resend
+        resend.api_key = api_key
+        resend.Emails.send({
+            "from": "onboarding@resend.dev",
+            "to": _LEAD_SENDER,
+            "subject": "NextChapter — New Lead",
+            "text": f"New signup: {email}",
+        })
         print(f"[lead] notified: {email}")
         return True
     except Exception as exc:
-        print(f"[lead] SMTP error: {exc}")
+        print(f"[lead] Resend error: {exc}")
         return False
 
 
