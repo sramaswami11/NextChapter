@@ -29,7 +29,7 @@ _INDEX_HTML = Path("web/templates/index.html")
 # In-memory sessions keyed by cookie (Step 1: single-user demo)
 sessions: dict[str, ConversationState] = {}
 
-_LEAD_SENDER = "sramaswami2021@gmail.com"
+_LEAD_SENDER = "sramaswami11@gmail.com"
 
 
 def _send_lead_notification(email: str) -> bool:
