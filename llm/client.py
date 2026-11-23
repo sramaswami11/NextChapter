@@ -32,7 +32,7 @@ def explain(system: str, user: str) -> str:
 def _groq(system: str, user: str, api_key: str) -> str | None:
     try:
         import groq
-        model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+        model = os.environ.get("GROQ_MODEL", "llama-3.1-70b-versatile")
         client = groq.Groq(api_key=api_key)
         resp = client.chat.completions.create(
             model=model,
