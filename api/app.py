@@ -29,7 +29,7 @@ _INDEX_HTML = Path("web/templates/index.html")
 # In-memory sessions keyed by cookie (Step 1: single-user demo)
 sessions: dict[str, ConversationState] = {}
 
-_LEAD_SENDER = "sramaswami11@gmail.com"
+_LEAD_SENDER = "sramaswami2021@gmail.com"
 
 
 def _send_lead_notification(email: str) -> bool:
@@ -41,7 +41,7 @@ def _send_lead_notification(email: str) -> bool:
         import resend
         resend.api_key = api_key
         resend.Emails.send({
-            "from": "onboarding@resend.dev",
+            "from": "noreply@nextchapterfi.com",
             "to": _LEAD_SENDER,
             "subject": "NextChapter — New Lead",
             "text": f"New signup: {email}",
