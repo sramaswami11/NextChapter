@@ -241,6 +241,39 @@ async function submitEmail(e) {
   }
 }
 
+async function submitAdvisorLead(e) {
+  e.preventDefault();
+  const name = document.getElementById('advisor-name-input').value.trim();
+  const email = document.getElementById('advisor-email-input').value.trim();
+  const context = document.getElementById('advisor-context-input').value;
+  const status = document.getElementById('advisor-lead-status');
+  const btn = document.getElementById('advisor-submit-btn');
+  btn.disabled = true;
+  status.style.color = '#94a3b8';
+  status.textContent = 'Sending...';
+  try {
+    const fd = new FormData();
+    fd.append('name', name);
+    fd.append('email', email);
+    fd.append('context', context);
+    const r = await fetch('/save-advisor-lead', { method: 'POST', body: fd });
+    const data = await r.json();
+    if (data.ok) {
+      status.style.color = '#10b981';
+      status.textContent = "Got it! We'll connect you with a fee-only advisor shortly.";
+      document.getElementById('advisor-lead-form').style.display = 'none';
+    } else {
+      status.style.color = '#ef4444';
+      status.textContent = 'Something went wrong — try again.';
+      btn.disabled = false;
+    }
+  } catch {
+    status.style.color = '#ef4444';
+    status.textContent = 'Something went wrong — try again.';
+    btn.disabled = false;
+  }
+}
+
 async function resetSession() {
   await fetch('/reset', { method: 'POST' });
   destroyCharts();

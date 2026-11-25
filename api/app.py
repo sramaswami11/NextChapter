@@ -59,6 +59,32 @@ async def save_email(email: str = Form(...)):
     return JSONResponse({"ok": ok})
 
 
+@app.post("/save-advisor-lead")
+async def save_advisor_lead(
+    name: str = Form(...),
+    email: str = Form(...),
+    context: str = Form(default=""),
+):
+    api_key = os.environ.get("RESEND_API_KEY", "")
+    if not api_key:
+        print(f"[advisor-lead] {name} <{email}> | {context}")
+        return JSONResponse({"ok": True})
+    try:
+        import resend
+        resend.api_key = api_key
+        resend.Emails.send({
+            "from": "noreply@nextchapterfi.com",
+            "to": _LEAD_SENDER,
+            "subject": "NextChapter — Advisor Lead",
+            "text": f"Advisor referral request\n\nName: {name}\nEmail: {email}\n\nAnalysis summary:\n{context}",
+        })
+        print(f"[advisor-lead] notified: {email}")
+        return JSONResponse({"ok": True})
+    except Exception as exc:
+        print(f"[advisor-lead] Resend error: {exc}")
+        return JSONResponse({"ok": False})
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     session_id = request.cookies.get("nc_session") or str(uuid.uuid4())
@@ -1163,6 +1189,16 @@ def _build_dashboard(
     bridge_section = _bridge_section(bridge) if bridge else ""
     aca_section = _aca_section(aca) if aca else ""
 
+    ss_summary = f"SS ${twin.ss.monthly_pia:,.0f}/mo at FRA" if twin.ss.monthly_pia > 0 else "No SS"
+    advisor_context = (
+        f"Age {twin.person.age}, retiring at {twin.person.retirement_age}. "
+        f"Savings ${twin.accounts.total_savings:,.0f}. "
+        f"Spending ${twin.spending.annual:,.0f}/yr. "
+        f"{ss_summary}. "
+        f"Success rate {rate:.0f}%. Median portfolio ${median:,.0f}. "
+        f"Filing: {fs_label}."
+    )
+
     income_section = _monthly_income_section(
         twin, ss_rec_age, ss_rec_monthly,
         spouse_ss_start_primary_age, spouse_ss_monthly_rec,
@@ -1225,6 +1261,22 @@ def _build_dashboard(
 {ss_section}
 {bridge_section}
 {aca_section}
+<div class="assumptions-box" style="margin-top:24px;border-left:3px solid #10b981">
+  <div class="assumptions-title" style="color:#10b981">&#128172; Talk to a Fee-Only Advisor</div>
+  <div class="roth-note" style="margin-bottom:12px">Your analysis is complete. A fee-only fiduciary advisor can help you turn this plan into action &mdash; no commissions, no products to sell.</div>
+  <form id="advisor-lead-form" onsubmit="submitAdvisorLead(event)" style="display:flex;flex-direction:column;gap:8px">
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <input type="text" id="advisor-name-input" placeholder="Your name" required
+             style="flex:1;min-width:140px;padding:8px 12px;background:#1e293b;border:1px solid #334155;border-radius:6px;color:#f1f5f9;font-size:14px">
+      <input type="email" id="advisor-email-input" placeholder="your@email.com" required
+             style="flex:1;min-width:180px;padding:8px 12px;background:#1e293b;border:1px solid #334155;border-radius:6px;color:#f1f5f9;font-size:14px">
+      <button type="submit" id="advisor-submit-btn"
+              style="padding:8px 16px;background:#10b981;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:14px;white-space:nowrap">Connect me</button>
+    </div>
+    <input type="hidden" id="advisor-context-input" value="{advisor_context}">
+  </form>
+  <div id="advisor-lead-status" style="margin-top:8px;font-size:13px;color:#94a3b8"></div>
+</div>
 <div class="assumptions-box" style="margin-top:24px;border-left:3px solid #6366f1">
   <div class="assumptions-title" style="color:#6366f1">Stay in the Loop</div>
   <div class="roth-note" style="margin-bottom:12px">Get notified when we add Medicare planning, state taxes, withdrawal sequencing, and more.</div>
