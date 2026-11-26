@@ -160,7 +160,7 @@ class TestIsReady:
             expected_return_answered=True,
             filing_status="single", ss_monthly_benefit=2_000.0,
             current_income_answered=True, ltcg_answered=True,
-            taxable_cost_basis_answered=True,
+
             life_expectancy_answered=True,
         )
         assert s.is_ready() is True
@@ -173,7 +173,7 @@ class TestIsReady:
             expected_return_answered=True,
             filing_status="single", ss_monthly_benefit=2_000.0,
             current_income_answered=True, ltcg_answered=True,
-            taxable_cost_basis_answered=True,
+
             life_expectancy_answered=True,
         )
         assert s.is_ready() is True
@@ -186,7 +186,7 @@ class TestIsReady:
             expected_return_answered=True,
             filing_status="single", ss_monthly_benefit=0.0,
             current_income_answered=True, ltcg_answered=True,
-            taxable_cost_basis_answered=True,
+
             life_expectancy_answered=True,
         )
         assert s.is_ready() is True
@@ -208,7 +208,7 @@ class TestIsReady:
             filing_status="married", spouse_questions_answered=True,
             ss_monthly_benefit=2_000.0,
             current_income_answered=True, ltcg_answered=True,
-            taxable_cost_basis_answered=True,
+
             life_expectancy_answered=True,
         )
         assert s.is_ready() is True
@@ -357,7 +357,8 @@ class TestNextQuestionOrder:
             expected_return_answered=True,
             filing_status="single", ss_monthly_benefit=2_000.0,
         )
-        assert "income" in s.next_question().lower()
+        q = s.next_question().lower()
+        assert "salary" in q or "income" in q or "gross" in q
 
     def test_life_expectancy_question_after_income(self):
         s = ConversationState(
@@ -382,7 +383,6 @@ class TestProcessMessage:
         return state
 
     def test_full_question_flow_early_retirement(self):
-        # retirement_age=63 < 65, so ACA question is inserted before life expectancy
         state = self._run_flow([
             "Can I retire at 63?",
             "55",
@@ -392,10 +392,9 @@ class TestProcessMessage:
             "skip",   # expected return → use default 7%
             "single",
             "2200",
-            "$120k",  # Q13a: gross income
-            "skip",   # Q13b: pretax deductions (skipped → taxable = gross)
+            "$120k",  # gross income
+            "skip",   # pretax deductions (skipped → taxable = gross)
             "no",     # no brokerage gains
-            "none",   # ACA: no taxable brokerage cost basis (retirement_age < 65)
             "87",
         ])
         assert state.retirement_age == 63
@@ -407,12 +406,10 @@ class TestProcessMessage:
         assert state.ss_monthly_benefit == pytest.approx(2_200)
         assert state.gross_income == pytest.approx(120_000)
         assert state.current_taxable_income == pytest.approx(120_000)
-        assert state.taxable_cost_basis == pytest.approx(0.0)
         assert state.life_expectancy == 87
         assert state.is_ready()
 
-    def test_full_question_flow_at_65_no_aca_question(self):
-        # retirement_age=65 → ACA question is skipped entirely
+    def test_full_question_flow_at_65(self):
         state = self._run_flow([
             "Can I retire at 65?",
             "55",
@@ -422,13 +419,12 @@ class TestProcessMessage:
             "skip",   # expected return → use default 7%
             "single",
             "2200",
-            "$120k",  # Q13a: gross income
-            "skip",   # Q13b: pretax deductions (skipped → taxable = gross)
+            "$120k",  # gross income
+            "skip",   # pretax deductions (skipped → taxable = gross)
             "no",     # no brokerage gains
             "87",
         ])
         assert state.retirement_age == 65
-        assert state.taxable_cost_basis_answered is False  # never asked
         assert state.life_expectancy == 87
         assert state.is_ready()
 
@@ -482,11 +478,10 @@ class TestProcessMessage:
         assert "401k" in q or "pre-tax" in q or "pretax" in q or "hsa" in q
 
     def test_life_expectancy_average_sets_84(self):
-        # retirement_age=63 → ACA question appears before life expectancy
         state = self._run_flow([
             "retire at 63", "55", "$800k", "$60k", "80%",
             "skip",    # expected return → use default 7%
-            "single", "2200", "skip", "no", "skip", "average",
+            "single", "2200", "skip", "no", "average",
         ])
         assert state.life_expectancy == 84
         assert state.life_expectancy_answered is True
@@ -539,7 +534,6 @@ class TestProcessMessage:
         assert state.spouse_questions_answered is True
 
     def test_married_spouse_working_full_flow(self):
-        # retirement_age=63 → ACA question appears before life expectancy
         state = self._run_flow([
             "retire at 63", "55", "$800k", "$60k", "80%",
             "skip",    # expected return → use default 7%
@@ -551,10 +545,9 @@ class TestProcessMessage:
             "1800",  # spouse SS benefit
             "85",    # spouse life expectancy
             "2200",
-            "$120k",  # Q13a: gross income
-            "skip",   # Q13b: pretax deductions (skipped → taxable = gross)
+            "$120k",  # gross income
+            "skip",   # pretax deductions (skipped → taxable = gross)
             "no",     # no brokerage gains
-            "none",   # ACA: no taxable brokerage cost basis
             "87",
         ])
         assert state.filing_status == "married"
@@ -592,107 +585,3 @@ class TestProcessMessage:
         assert state.traditional_pct == pytest.approx(0.0)
 
 
-# ---------------------------------------------------------------------------
-# ACA taxable_cost_basis question — gated on retirement_age < 65
-# ---------------------------------------------------------------------------
-
-class TestAcaCostBasisQuestion:
-    def _base_state(self, retirement_age=62):
-        """State just past LTCG/estate intent, ready for ACA question."""
-        return ConversationState(
-            retirement_age=retirement_age,
-            age=55,
-            savings=1_000_000,
-            annual_spending=60_000,
-            traditional_pct=0.80,
-            expected_return_answered=True,
-            filing_status="single",
-            spouse_questions_answered=True,
-            ss_monthly_benefit=2_000.0,
-            current_income_answered=True,
-            ltcg_answered=True,
-            unrealized_ltcg=0.0,
-            estate_intent_answered=True,
-        )
-
-    # -- question appears when retirement_age < 65 ----------------------------
-
-    def test_aca_question_asked_when_retiring_before_65(self):
-        s = self._base_state(retirement_age=62)
-        q = s.next_question().lower()
-        assert "aca" in q or "medicare" in q or "cost basis" in q or "brokerage" in q
-
-    def test_aca_question_not_asked_when_retiring_at_65(self):
-        s = self._base_state(retirement_age=65)
-        q = s.next_question().lower()
-        # Should skip directly to life expectancy
-        assert "live" in q or "age" in q or "life" in q
-
-    # -- parsing cost basis answers -------------------------------------------
-
-    def test_dollar_amount_sets_cost_basis(self):
-        s = self._base_state(retirement_age=62)
-        process_message(s, "$150k")
-        assert s.taxable_cost_basis == pytest.approx(150_000)
-        assert s.taxable_cost_basis_answered is True
-
-    def test_none_sets_cost_basis_to_zero(self):
-        s = self._base_state(retirement_age=62)
-        process_message(s, "none")
-        assert s.taxable_cost_basis == pytest.approx(0.0)
-        assert s.taxable_cost_basis_answered is True
-
-    def test_skip_sets_cost_basis_to_zero(self):
-        s = self._base_state(retirement_age=62)
-        process_message(s, "skip")
-        assert s.taxable_cost_basis == pytest.approx(0.0)
-        assert s.taxable_cost_basis_answered is True
-
-    def test_no_sets_cost_basis_to_zero(self):
-        s = self._base_state(retirement_age=62)
-        process_message(s, "no")
-        assert s.taxable_cost_basis == pytest.approx(0.0)
-        assert s.taxable_cost_basis_answered is True
-
-    def test_zero_string_sets_cost_basis_to_zero(self):
-        s = self._base_state(retirement_age=62)
-        process_message(s, "0")
-        assert s.taxable_cost_basis == pytest.approx(0.0)
-        assert s.taxable_cost_basis_answered is True
-
-    # -- is_ready gating ------------------------------------------------------
-
-    def test_is_ready_requires_aca_when_retiring_before_65(self):
-        # All answered except ACA and life expectancy
-        s = self._base_state(retirement_age=62)
-        # taxable_cost_basis_answered=False → not ready
-        assert s.is_ready() is False
-
-    def test_is_ready_does_not_require_aca_when_retiring_at_65(self):
-        s = self._base_state(retirement_age=65)
-        # taxable_cost_basis_answered=False but retirement_age=65 → ok
-        s.life_expectancy = 84
-        s.life_expectancy_answered = True
-        assert s.is_ready() is True
-
-    def test_is_ready_true_after_aca_and_life_expectancy_answered(self):
-        s = self._base_state(retirement_age=62)
-        s.taxable_cost_basis = 100_000
-        s.taxable_cost_basis_answered = True
-        s.life_expectancy = 84
-        s.life_expectancy_answered = True
-        assert s.is_ready() is True
-
-    def test_aca_question_not_asked_when_current_age_is_65(self):
-        # Retired early but now on Medicare — no ACA question
-        s = self._base_state(retirement_age=62)
-        s.age = 65
-        q = s.next_question().lower()
-        assert "live" in q or "age" in q or "life" in q
-
-    def test_is_ready_does_not_require_aca_when_age_65(self):
-        s = self._base_state(retirement_age=62)
-        s.age = 65
-        s.life_expectancy = 84
-        s.life_expectancy_answered = True
-        assert s.is_ready() is True

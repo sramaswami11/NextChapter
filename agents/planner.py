@@ -13,6 +13,7 @@ class ConversationState:
     expected_return: Optional[float] = None   # annual portfolio return override; None → 7% default
     expected_return_answered: bool = False
     filing_status: Optional[str] = None       # "single" or "married"
+
     spouse_working: Optional[bool] = None
     spouse_age: Optional[int] = None
     spouse_income: Optional[float] = None
@@ -29,8 +30,6 @@ class ConversationState:
     ltcg_answered: bool = False
     estate_intent: Optional[str] = None       # "spend" or "heirs"
     estate_intent_answered: bool = False
-    taxable_cost_basis: Optional[float] = None  # cost basis of taxable brokerage; 0 = none/skipped
-    taxable_cost_basis_answered: bool = False
     life_expectancy: Optional[int] = None
     life_expectancy_answered: bool = False
     analysis_complete: bool = False
@@ -50,13 +49,6 @@ class ConversationState:
             if (self.unrealized_ltcg is not None and self.unrealized_ltcg > 0)
             else True
         )
-        # ACA question only when retiring before 65 AND not yet on Medicare (age < 65)
-        _aca_ok = (
-            self.taxable_cost_basis_answered
-            if (self.retirement_age is not None and self.retirement_age < 65
-                and self.age is not None and self.age < 65)
-            else True
-        )
         return (
             self.retirement_age is not None
             and self.age is not None
@@ -70,7 +62,6 @@ class ConversationState:
             and self.current_income_answered
             and self.ltcg_answered
             and _estate_ok
-            and _aca_ok
             and self.life_expectancy_answered
         )
 
@@ -125,14 +116,17 @@ class ConversationState:
         if not self.current_income_answered:
             if self.gross_income is None:
                 return (
-                    "What is your annual gross salary or total income this year? "
+                    "What is your annual gross salary — the number on your offer letter or W-2, "
+                    "before taxes or deductions, including any bonuses? "
                     "(e.g. '$150k', '$95k') Type 'skip' if you'd prefer not to share."
                 )
             else:
                 return (
-                    "Do you contribute to a 401k, 403b, or HSA? How much per year total "
-                    "in pre-tax contributions? Common amounts: $23,500 (401k max), "
-                    "$4,300 (HSA max). (e.g. '$27k', '$18k' — type 'none' or 'skip' if unsure.)"
+                    "Do you contribute to a traditional (pre-tax) 401k, 403b, or HSA? "
+                    "If you contribute to both, add them together. "
+                    "Note: Roth 401k contributions are after-tax — don't include those here. "
+                    "Common amounts: $23,500 (401k max), $4,300 (HSA max). "
+                    "(e.g. '$27k', '$18k' — type 'none' or 'skip' if unsure.)"
                 )
         if not self.ltcg_answered:
             return (
@@ -148,20 +142,6 @@ class ConversationState:
             return (
                 "Do you plan to spend this brokerage money in retirement, "
                 "or leave it to your heirs? (type 'spend' or 'heirs' — or 'skip')"
-            )
-        if (
-            self.retirement_age is not None
-            and self.retirement_age < 65
-            and self.age is not None
-            and self.age < 65
-            and not self.taxable_cost_basis_answered
-        ):
-            return (
-                "Since you're retiring before Medicare at 65, ACA health insurance will "
-                "cover the gap. Do you have a taxable brokerage account (outside your "
-                "401k/IRA)? If so, what was your original invested amount — the cost basis, "
-                "not the current value? This helps us check your ACA subsidy exposure. "
-                "(e.g. '$150k', 'none', or 'skip')"
             )
         if not self.life_expectancy_answered:
             return (
@@ -548,24 +528,6 @@ def process_message(state: ConversationState, text: str) -> None:
         elif any(w in t for w in ("skip", "not sure", "don't know", "unsure")):
             state.estate_intent = None
             state.estate_intent_answered = True
-        return
-
-    if (
-        state.retirement_age is not None
-        and state.retirement_age < 65
-        and state.age is not None
-        and state.age < 65
-        and not state.taxable_cost_basis_answered
-    ):
-        t = text.lower().strip()
-        if any(w in t for w in ("none", "no", "skip", "don't have", "do not have", "zero", "nothing")):
-            state.taxable_cost_basis = 0.0
-            state.taxable_cost_basis_answered = True
-        else:
-            num = _parse_number(text)
-            if num is not None and num >= 0:
-                state.taxable_cost_basis = num
-                state.taxable_cost_basis_answered = True
         return
 
     if not state.life_expectancy_answered:

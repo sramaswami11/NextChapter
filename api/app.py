@@ -309,7 +309,7 @@ async def chat(request: Request, message: str = Form(...)):
                 twin,
                 ss_claiming_age=_win_ss_age,
                 ss_monthly_at_claiming=_win_ss_monthly,
-                taxable_cost_basis=state.taxable_cost_basis or 0.0,
+                taxable_cost_basis=0.0,
             )
             yield _sse("chat", "✓ ACA pre-Medicare income analysis")
             await asyncio.sleep(0.2)
@@ -934,6 +934,27 @@ def _aca_section(aca: dict) -> str:
 </details>"""
 
 
+def _mc_assumptions_box(twin: "HouseholdTwin") -> str:
+    a = twin.assumptions
+    if a.portfolio_return is not None:
+        return (
+            f'<div class="assumptions-box">'
+            f'<div class="assumptions-title">Assumptions</div>'
+            f'<div class="assumptions-row"><span>Expected portfolio return</span>'
+            f'<span>{a.portfolio_return * 100:.1f}% nominal (your estimate)</span></div>'
+            f'<div class="assumptions-row"><span>Inflation</span><span>2.5%</span></div>'
+            f'</div>'
+        )
+    return (
+        '<div class="assumptions-box">'
+        '<div class="assumptions-title">Assumptions</div>'
+        '<div class="assumptions-row"><span>Portfolio mix</span><span>60% stocks / 40% bonds</span></div>'
+        '<div class="assumptions-row"><span>Expected portfolio return</span><span>7.0% nominal (default)</span></div>'
+        '<div class="assumptions-row"><span>Inflation</span><span>2.5%</span></div>'
+        '</div>'
+    )
+
+
 def _build_dashboard(
     results: dict,
     twin: HouseholdTwin,
@@ -1247,13 +1268,7 @@ def _build_dashboard(
     <div class="kpi-sub">{twin.accounts.traditional_pct:.0%} of portfolio (pre-tax)</div>
   </div>
 </div>
-<div class="assumptions-box">
-  <div class="assumptions-title">Assumptions</div>
-  <div class="assumptions-row"><span>Portfolio mix</span><span>60% stocks / 40% bonds</span></div>
-  <div class="assumptions-row"><span>Stock return</span><span>9.0% nominal</span></div>
-  <div class="assumptions-row"><span>Bond return</span><span>4.0% nominal</span></div>
-  <div class="assumptions-row"><span>Inflation</span><span>2.5%</span></div>
-</div>
+{_mc_assumptions_box(twin)}
 {roth_section}
 {win_section}
 {ltcg_section}
