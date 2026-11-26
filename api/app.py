@@ -169,7 +169,7 @@ async def chat(request: Request, message: str = Form(...)):
                 traditional_pct=state.traditional_pct,
             ),
             spending=Spending(annual=state.annual_spending),
-            assumptions=Assumptions(),
+            assumptions=Assumptions(portfolio_return=state.expected_return),
             tax_profile=TaxProfile(filing_status=state.filing_status),
             ss=SocialSecurity(monthly_pia=pia_monthly, birth_year=birth_year),
         )

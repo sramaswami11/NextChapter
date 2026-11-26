@@ -10,6 +10,8 @@ class ConversationState:
     savings: Optional[float] = None
     annual_spending: Optional[float] = None
     traditional_pct: Optional[float] = None   # 0.0–1.0
+    expected_return: Optional[float] = None   # annual portfolio return override; None → 7% default
+    expected_return_answered: bool = False
     filing_status: Optional[str] = None       # "single" or "married"
     spouse_working: Optional[bool] = None
     spouse_age: Optional[int] = None
@@ -61,6 +63,7 @@ class ConversationState:
             and self.savings is not None
             and self.annual_spending is not None
             and self.traditional_pct is not None
+            and self.expected_return_answered
             and self.filing_status is not None
             and _spouse_ok
             and self.ss_monthly_benefit is not None
@@ -85,6 +88,13 @@ class ConversationState:
                 f"Of your ${self.savings:,.0f} in savings, what percentage is in traditional "
                 f"(pre-tax) accounts like a 401k or traditional IRA? "
                 f"(e.g. '80%', 'all of it', 'about half')"
+            )
+        if not self.expected_return_answered:
+            return (
+                "What annual return do you expect from your investments? "
+                "A 60/40 stock/bond portfolio has historically returned about 7% — that's our default. "
+                "Conservative investors use 5–6%, aggressive use 8–9%. "
+                "(e.g. '6%', '7.5%' — or type 'skip' to use the default of 7%)"
             )
         if self.filing_status is None:
             return "Are you filing taxes as single or married?"
@@ -407,6 +417,21 @@ def process_message(state: ConversationState, text: str) -> None:
         pct = _parse_percentage(text)
         if pct is not None:
             state.traditional_pct = pct
+        return
+
+    if not state.expected_return_answered:
+        t = text.lower().strip()
+        if any(w in t for w in ("skip", "default", "don't know", "not sure", "average", "typical")):
+            state.expected_return_answered = True  # keep expected_return=None → engine uses 7%
+        else:
+            m = re.search(r"(\d+\.?\d*)\s*%?", t.replace(",", ""))
+            if m:
+                val = float(m.group(1))
+                if val > 0.20:  # entered as percentage like "7" or "7.5"
+                    val = val / 100.0
+                if 0.01 <= val <= 0.20:
+                    state.expected_return = val
+                    state.expected_return_answered = True
         return
 
     if state.filing_status is None:

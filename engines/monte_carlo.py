@@ -23,7 +23,9 @@ def run_monte_carlo(
         }
 
     a = twin.assumptions
-    mu = a.stock_pct * a.stock_return + (1 - a.stock_pct) * a.bond_return
+    mu = a.portfolio_return if a.portfolio_return is not None else (
+        a.stock_pct * a.stock_return + (1 - a.stock_pct) * a.bond_return
+    )
     sigma = a.stock_pct * 0.17 + (1 - a.stock_pct) * 0.06
 
     portfolio_at_retirement = twin.accounts.total_savings * (1 + mu) ** years_to_retirement

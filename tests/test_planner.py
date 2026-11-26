@@ -157,6 +157,7 @@ class TestIsReady:
         s = ConversationState(
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
+            expected_return_answered=True,
             filing_status="single", ss_monthly_benefit=2_000.0,
             current_income_answered=True, ltcg_answered=True,
             taxable_cost_basis_answered=True,
@@ -169,6 +170,7 @@ class TestIsReady:
         s = ConversationState(
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.0,
+            expected_return_answered=True,
             filing_status="single", ss_monthly_benefit=2_000.0,
             current_income_answered=True, ltcg_answered=True,
             taxable_cost_basis_answered=True,
@@ -181,6 +183,7 @@ class TestIsReady:
         s = ConversationState(
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
+            expected_return_answered=True,
             filing_status="single", ss_monthly_benefit=0.0,
             current_income_answered=True, ltcg_answered=True,
             taxable_cost_basis_answered=True,
@@ -201,6 +204,7 @@ class TestIsReady:
         s = ConversationState(
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
+            expected_return_answered=True,
             filing_status="married", spouse_questions_answered=True,
             ss_monthly_benefit=2_000.0,
             current_income_answered=True, ltcg_answered=True,
@@ -237,10 +241,19 @@ class TestNextQuestionOrder:
         )
         assert "traditional" in s.next_question().lower()
 
-    def test_sixth_question_is_filing_status(self):
+    def test_sixth_question_is_expected_return(self):
         s = ConversationState(
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
+        )
+        q = s.next_question().lower()
+        assert "return" in q or "invest" in q or "7%" in q
+
+    def test_seventh_question_is_filing_status(self):
+        s = ConversationState(
+            retirement_age=63, age=55, savings=800_000,
+            annual_spending=60_000, traditional_pct=0.80,
+            expected_return_answered=True,
         )
         assert "single" in s.next_question().lower() or "married" in s.next_question().lower()
 
@@ -248,6 +261,7 @@ class TestNextQuestionOrder:
         s = ConversationState(
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
+            expected_return_answered=True,
             filing_status="married",
         )
         q = s.next_question().lower()
@@ -257,6 +271,7 @@ class TestNextQuestionOrder:
         s = ConversationState(
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
+            expected_return_answered=True,
             filing_status="married", spouse_age=60,
         )
         q = s.next_question().lower()
@@ -266,6 +281,7 @@ class TestNextQuestionOrder:
         s = ConversationState(
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
+            expected_return_answered=True,
             filing_status="married", spouse_age=60, spouse_working=True,
         )
         q = s.next_question().lower()
@@ -275,6 +291,7 @@ class TestNextQuestionOrder:
         s = ConversationState(
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
+            expected_return_answered=True,
             filing_status="married", spouse_age=60, spouse_working=True, spouse_income=90_000,
         )
         q = s.next_question().lower()
@@ -284,6 +301,7 @@ class TestNextQuestionOrder:
         s = ConversationState(
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
+            expected_return_answered=True,
             filing_status="married", spouse_age=60, spouse_working=True,
             spouse_income=90_000, spouse_retirement_age=67,
         )
@@ -294,6 +312,7 @@ class TestNextQuestionOrder:
         s = ConversationState(
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
+            expected_return_answered=True,
             filing_status="married", spouse_age=60, spouse_working=False,
         )
         q = s.next_question().lower()
@@ -303,6 +322,7 @@ class TestNextQuestionOrder:
         s = ConversationState(
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
+            expected_return_answered=True,
             filing_status="married", spouse_age=60, spouse_working=False,
             spouse_ss_benefit=1_500.0,
         )
@@ -314,32 +334,36 @@ class TestNextQuestionOrder:
         s = ConversationState(
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
+            expected_return_answered=True,
             filing_status="married", spouse_age=60, spouse_working=False,
             spouse_ss_benefit=0.0, spouse_questions_answered=True,
         )
         # Next question should be primary SS, not spouse LE
         assert "social security" in s.next_question().lower() or "estimated" in s.next_question().lower()
 
-    def test_seventh_question_is_ss_benefit(self):
+    def test_ss_benefit_question_after_filing_status(self):
         s = ConversationState(
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
+            expected_return_answered=True,
             filing_status="single",
         )
         assert "social security" in s.next_question().lower()
 
-    def test_eighth_question_is_current_income(self):
+    def test_current_income_question_after_ss(self):
         s = ConversationState(
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
+            expected_return_answered=True,
             filing_status="single", ss_monthly_benefit=2_000.0,
         )
         assert "income" in s.next_question().lower()
 
-    def test_ninth_question_is_life_expectancy(self):
+    def test_life_expectancy_question_after_income(self):
         s = ConversationState(
             retirement_age=63, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
+            expected_return_answered=True,
             filing_status="single", ss_monthly_benefit=2_000.0,
             current_income_answered=True,
         )
@@ -365,6 +389,7 @@ class TestProcessMessage:
             "$800k",
             "$60k",
             "80%",
+            "skip",   # expected return → use default 7%
             "single",
             "2200",
             "$120k",  # Q13a: gross income
@@ -394,6 +419,7 @@ class TestProcessMessage:
             "$800k",
             "$60k",
             "80%",
+            "skip",   # expected return → use default 7%
             "single",
             "2200",
             "$120k",  # Q13a: gross income
@@ -408,27 +434,27 @@ class TestProcessMessage:
 
     def test_ss_skip_sets_zero(self):
         state = self._run_flow([
-            "retire at 63", "55", "$800k", "$60k", "80%", "single", "none",
+            "retire at 63", "55", "$800k", "$60k", "80%", "skip", "single", "none",
         ])
         assert state.ss_monthly_benefit == 0.0
 
     def test_ss_annual_amount_converted_to_monthly(self):
         # $28,800 annual SS → $2,400/mo (>5000 so divided by 12)
         state = self._run_flow([
-            "retire at 63", "55", "$800k", "$60k", "80%", "single", "28800",
+            "retire at 63", "55", "$800k", "$60k", "80%", "skip", "single", "28800",
         ])
         assert state.ss_monthly_benefit == pytest.approx(2_400.0)
 
     def test_income_skip_marks_answered(self):
         state = self._run_flow([
-            "retire at 63", "55", "$800k", "$60k", "80%", "single", "2200", "skip",
+            "retire at 63", "55", "$800k", "$60k", "80%", "skip", "single", "2200", "skip",
         ])
         assert state.current_income_answered is True
         assert state.current_taxable_income is None
 
     def test_gross_minus_pretax_computes_taxable_income(self):
         state = self._run_flow([
-            "retire at 65", "55", "$800k", "$60k", "80%", "single", "2200", "$150k", "$27k",
+            "retire at 65", "55", "$800k", "$60k", "80%", "skip", "single", "2200", "$150k", "$27k",
         ])
         assert state.gross_income == pytest.approx(150_000)
         assert state.pretax_deductions == pytest.approx(27_000)
@@ -437,7 +463,7 @@ class TestProcessMessage:
 
     def test_pretax_skip_uses_full_gross(self):
         state = self._run_flow([
-            "retire at 65", "55", "$800k", "$60k", "80%", "single", "2200", "$150k", "skip",
+            "retire at 65", "55", "$800k", "$60k", "80%", "skip", "single", "2200", "$150k", "skip",
         ])
         assert state.gross_income == pytest.approx(150_000)
         assert state.pretax_deductions is None
@@ -448,6 +474,7 @@ class TestProcessMessage:
         s = ConversationState(
             retirement_age=65, age=55, savings=800_000,
             annual_spending=60_000, traditional_pct=0.80,
+            expected_return_answered=True,
             filing_status="single", ss_monthly_benefit=2_000.0,
             gross_income=150_000,
         )
@@ -458,6 +485,7 @@ class TestProcessMessage:
         # retirement_age=63 → ACA question appears before life expectancy
         state = self._run_flow([
             "retire at 63", "55", "$800k", "$60k", "80%",
+            "skip",    # expected return → use default 7%
             "single", "2200", "skip", "no", "skip", "average",
         ])
         assert state.life_expectancy == 84
@@ -478,13 +506,13 @@ class TestProcessMessage:
 
     def test_married_filing_status(self):
         state = self._run_flow([
-            "retire at 63", "55", "$800k", "$60k", "80%", "married",
+            "retire at 63", "55", "$800k", "$60k", "80%", "skip", "married",
         ])
         assert state.filing_status == "married"
 
     def test_single_skips_spouse_questions(self):
         state = self._run_flow([
-            "retire at 63", "55", "$800k", "$60k", "80%", "single",
+            "retire at 63", "55", "$800k", "$60k", "80%", "skip", "single",
         ])
         assert state.spouse_questions_answered is True
         assert state.spouse_working is None
@@ -492,7 +520,7 @@ class TestProcessMessage:
     def test_married_spouse_not_working(self):
         # spouse_age → not working → spouse SS benefit → spouse LE → questions complete
         state = self._run_flow([
-            "retire at 63", "55", "$800k", "$60k", "80%", "married", "60", "no", "1500", "85",
+            "retire at 63", "55", "$800k", "$60k", "80%", "skip", "married", "60", "no", "1500", "85",
         ])
         assert state.spouse_age == 60
         assert state.spouse_working is False
@@ -504,7 +532,7 @@ class TestProcessMessage:
     def test_married_spouse_not_working_no_ss(self):
         # When SS = 0, no LE question — done after SS answer
         state = self._run_flow([
-            "retire at 63", "55", "$800k", "$60k", "80%", "married", "60", "no", "0",
+            "retire at 63", "55", "$800k", "$60k", "80%", "skip", "married", "60", "no", "0",
         ])
         assert state.spouse_ss_benefit == pytest.approx(0.0)
         assert state.spouse_life_expectancy is None
@@ -514,6 +542,7 @@ class TestProcessMessage:
         # retirement_age=63 → ACA question appears before life expectancy
         state = self._run_flow([
             "retire at 63", "55", "$800k", "$60k", "80%",
+            "skip",    # expected return → use default 7%
             "married",
             "60",    # spouse age
             "yes",
@@ -543,7 +572,7 @@ class TestProcessMessage:
     def test_spouse_ss_annual_converted_to_monthly(self):
         # $21,600/yr → $1,800/mo; then LE is required before questions complete
         state = self._run_flow([
-            "retire at 63", "55", "$800k", "$60k", "80%", "married", "60", "no", "21600", "83",
+            "retire at 63", "55", "$800k", "$60k", "80%", "skip", "married", "60", "no", "21600", "83",
         ])
         assert state.spouse_ss_benefit == pytest.approx(1_800.0)
         assert state.spouse_life_expectancy == 83
@@ -551,7 +580,7 @@ class TestProcessMessage:
 
     def test_spouse_le_average_sets_84(self):
         state = self._run_flow([
-            "retire at 63", "55", "$800k", "$60k", "80%", "married", "60", "no", "1500", "average",
+            "retire at 63", "55", "$800k", "$60k", "80%", "skip", "married", "60", "no", "1500", "average",
         ])
         assert state.spouse_life_expectancy == 84
         assert state.spouse_questions_answered is True
@@ -576,6 +605,7 @@ class TestAcaCostBasisQuestion:
             savings=1_000_000,
             annual_spending=60_000,
             traditional_pct=0.80,
+            expected_return_answered=True,
             filing_status="single",
             spouse_questions_answered=True,
             ss_monthly_benefit=2_000.0,

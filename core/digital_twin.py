@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Optional
 
 
 @dataclass
@@ -32,6 +33,7 @@ class Assumptions:
     bond_return: float = 0.04
     inflation: float = 0.025
     stock_pct: float = 0.60
+    portfolio_return: Optional[float] = None  # user override; None → use stock/bond blend
 
 
 @dataclass
