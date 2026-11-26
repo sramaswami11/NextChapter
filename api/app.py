@@ -448,6 +448,7 @@ async def chat(request: Request, message: str = Form(...)):
             ss_rec_monthly=_win_ss_monthly,
             spouse_ss_start_primary_age=_spouse_ss_start_primary,
             spouse_ss_monthly_rec=spouse_ss_monthly_at_claiming,
+            spouse_ss_claiming_age=spouse_ss_claiming_age,
             bridge=bridge,
             aca=aca,
         ))
@@ -743,6 +744,7 @@ def _monthly_income_section(
     ss_rec_monthly: float,
     spouse_ss_start_primary_age: float = 999.0,
     spouse_ss_monthly_rec: float = 0.0,
+    spouse_ss_claiming_age: float = 999.0,
 ) -> str:
     monthly_spending = twin.spending.annual / 12
     retirement_age = twin.person.retirement_age
@@ -825,13 +827,18 @@ def _monthly_income_section(
                 "spouse_ss": spouse_ss_monthly_rec if has_spouse_ss else 0.0,
             })
 
+    _ss_age_label = f"age {int(ss_rec_age)}" if ss_rec_age < 900 else ""
+    _spouse_age_label = f"age {int(spouse_ss_claiming_age)}" if spouse_ss_claiming_age < 900 else ""
+
     def _phase_card(p: dict) -> str:
         total = p["portfolio"] + p["primary_ss"] + p["spouse_ss"]
         rows = []
         if p["primary_ss"] > 0:
-            rows.append(f'<div class="income-row"><span>Your SS</span><span class="val">${p["primary_ss"]:,.0f}/mo</span></div>')
+            lbl = f"Your SS ({_ss_age_label})" if _ss_age_label else "Your SS"
+            rows.append(f'<div class="income-row"><span>{lbl}</span><span class="val">${p["primary_ss"]:,.0f}/mo</span></div>')
         if p["spouse_ss"] > 0:
-            rows.append(f'<div class="income-row"><span>Spouse SS</span><span class="val">${p["spouse_ss"]:,.0f}/mo</span></div>')
+            lbl = f"Spouse SS ({_spouse_age_label})" if _spouse_age_label else "Spouse SS"
+            rows.append(f'<div class="income-row"><span>{lbl}</span><span class="val">${p["spouse_ss"]:,.0f}/mo</span></div>')
         rows.append(f'<div class="income-row"><span>Portfolio draw</span><span class="val">${p["portfolio"]:,.0f}/mo</span></div>')
         rows_html = "\n".join(rows)
         return f"""<div class="kpi">
@@ -975,6 +982,7 @@ def _build_dashboard(
     ss_rec_monthly: float = 0.0,
     spouse_ss_start_primary_age: float = 999.0,
     spouse_ss_monthly_rec: float = 0.0,
+    spouse_ss_claiming_age: float = 999.0,
     bridge: dict | None = None,
     aca: dict | None = None,
 ) -> str:
@@ -1223,6 +1231,7 @@ def _build_dashboard(
     income_section = _monthly_income_section(
         twin, ss_rec_age, ss_rec_monthly,
         spouse_ss_start_primary_age, spouse_ss_monthly_rec,
+        spouse_ss_claiming_age,
     )
 
     has_ss_chart = ss_data is not None and twin.ss.monthly_pia > 0
